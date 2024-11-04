@@ -886,3 +886,249 @@ Processing orders: 100%|██████████| 1108/1108 [00:48<00:00, 
 2024-10-31 18:12:17,798 - INFO - Creating Drivable Distance sheet
 2024-10-31 18:13:07,649 - INFO - Adding store counts to Coordinates sheet
 2024-10-31 18:13:07,659 - ERROR - Error processing geolocation data: Worksheet named 'Coordinates' not found
+
+
+
+
+
+
+--------------------------------------------------------
+--------------------------------------------------------
+--------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------------------
+--------------------------------------------------------
+
+import pandas as pd
+import numpy as np
+from geopy.geocoders import GoogleV3
+import pycountry
+import logging
+from tqdm import tqdm
+import json
+import unicodedata
+import re
+import time
+import os
+from typing import Tuple, Optional, Dict
+from datetime import datetime
+from pathlib import Path
+
+class GeoLocationMapper:
+    """A class to handle geolocation mapping using Google Maps API."""
+    
+    def __init__(self, api_key: str, cache_file: str = 'geolocation_cache.json'):
+        """
+        Initialize the GeoLocationMapper.
+        
+        Args:
+            api_key (str): Google Maps API key
+            cache_file (str): Path to the cache file
+        """
+        self.api_key = api_key
+        self.cache_file = cache_file
+        self.geolocator = GoogleV3(api_key=api_key)
+        self.cache = self._load_cache()
+        self.total_calls = 0
+        self.rate_limit_delay = 0.1  # 100ms delay between API calls
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(f'geolocation_mapping_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+                logging.StreamHandler()
+            ]
+        )
+
+    def _load_cache(self) -> Dict:
+        """Load the geolocation cache from file."""
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logging.error(f"Error loading cache: {e}")
+            return {}
+
+    def _save_cache(self) -> None:
+        """Save the geolocation cache to file."""
+        try:
+            with open(self.cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self.cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logging.error(f"Error saving cache: {e}")
+
+    @staticmethod
+    def normalize_text(text: str) -> str:
+        """Normalize text to ASCII and remove hidden characters."""
+        if not isinstance(text, str):
+            return text
+        # Normalize to ASCII
+        text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+        # Remove hidden characters
+        text = ''.join(c for c in text if c.isprintable())
+        # Standardize whitespace
+        text = re.sub(r'\s+', ' ', text.strip())
+        return text
+
+    @staticmethod
+    def get_country_name(country_code: str) -> str:
+        """Get full country name from country code."""
+        try:
+            return pycountry.countries.get(alpha_2=country_code).name
+        except (AttributeError, KeyError):
+            logging.warning(f"Country code '{country_code}' not found")
+            return country_code
+
+    def get_lat_long(self, address_components: dict) -> Tuple[Optional[float], Optional[float]]:
+        """
+        Get latitude and longitude for an address.
+        
+        Args:
+            address_components (dict): Dictionary containing address components
+                
+        Returns:
+            tuple: (latitude, longitude) or (None, None) if not found
+        """
+        try:
+            # Validate required fields
+            required_fields = ['street_name', 'postal_code', 'town', 'country_code']
+            if not all(address_components.get(field) for field in required_fields):
+                missing_fields = [f for f in required_fields if not address_components.get(f)]
+                logging.warning(f"Missing required fields: {missing_fields}")
+                return None, None
+
+            # Construct address string
+            country = self.get_country_name(address_components['country_code'])
+            address_parts = [
+                f"{address_components['street_name']} {address_components.get('street_number', '')}".strip(),
+                f"{address_components['postal_code']}",
+                address_components['town'],
+                country
+            ]
+            address = ', '.join(filter(None, address_parts))
+
+            # Check cache
+            if address in self.cache:
+                logging.debug(f"Cache hit for address: {address}")
+                return self.cache[address]
+
+            # Rate limiting
+            time.sleep(self.rate_limit_delay)
+
+            # Geocode address
+            location = self.geolocator.geocode(address)
+            self.total_calls += 1
+
+            if location:
+                result = (location.latitude, location.longitude)
+                self.cache[address] = result
+                if self.total_calls % 100 == 0:  # Save cache periodically
+                    self._save_cache()
+                return result
+            
+            logging.warning(f"No location found for address: {address}")
+            return None, None
+
+        except Exception as e:
+            logging.error(f"Error geocoding address: {e}")
+            return None, None
+
+    def process_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Process the input DataFrame and add geolocation data.
+        
+        Args:
+            df (pd.DataFrame): Input DataFrame with address information
+            
+        Returns:
+            pd.DataFrame: DataFrame with added latitude and longitude columns
+        """
+        # Normalize text columns
+        text_columns = ['STREET NAME', 'TOWN', 'POSTAL CODE']
+        for col in text_columns:
+            if col in df.columns:
+                df[col] = df[col].apply(self.normalize_text)
+
+        # Create progress bar
+        tqdm.pandas(desc="Mapping geolocations")
+
+        # Apply geolocation mapping
+        results = df.progress_apply(
+            lambda row: self.get_lat_long({
+                'street_name': row.get('STREET NAME'),
+                'street_number': row.get('STREET NUMBER'),
+                'postal_code': row.get('POSTAL CODE'),
+                'town': row.get('TOWN'),
+                'country_code': row.get('COUNTRY')
+            }), 
+            axis=1
+        )
+        
+        df['Latitude'], df['Longitude'] = zip(*results)
+        return df
+
+    def map_geolocations(self, input_file: str, output_file: str) -> None:
+        """
+        Main function to process input file and save results.
+        
+        Args:
+            input_file (str): Path to input CSV file
+            output_file (str): Path to output Excel file
+        """
+        try:
+            # Read input file
+            logging.info(f"Reading input file: {input_file}")
+            data = pd.read_csv(input_file, delimiter=';', encoding='utf-8')
+            
+            # Process data
+            df = self.process_dataframe(data)
+            
+            # Create unmapped addresses DataFrame
+            unmapped_df = df[df['Latitude'].isna() | df['Longitude'].isna()]
+            
+            # Save results
+            with pd.ExcelWriter(output_file) as writer:
+                df.to_excel(writer, sheet_name='Coordinates', index=False)
+                unmapped_df.to_excel(writer, sheet_name='Unmapped', index=False)
+            
+            # Log statistics
+            self._log_statistics(df, unmapped_df)
+            
+            # Save final cache
+            self._save_cache()
+            
+        except Exception as e:
+            logging.error(f"Error processing file: {e}")
+            raise
+
+    def _log_statistics(self, df: pd.DataFrame, unmapped_df: pd.DataFrame) -> None:
+        """Log processing statistics."""
+        unmapped_count = len(unmapped_df)
+        total_rows = len(df)
+        unmapped_percentage = (unmapped_count / total_rows) * 100 if total_rows > 0 else 0
+        
+        logging.info(f"Processing completed:")
+        logging.info(f"Total addresses processed: {total_rows}")
+        logging.info(f"Successfully mapped: {total_rows - unmapped_count}")
+        logging.info(f"Failed to map: {unmapped_count} ({unmapped_percentage:.2f}%)")
+        logging.info(f"Unique addresses in cache: {len(self.cache)}")
+        logging.info(f"Total API calls made: {self.total_calls}")
+
+# Example usage:
+"""
+mapper = GeoLocationMapper(api_key='your_api_key_here')
+mapper.map_geolocations(
+    input_file='testing_CZ_ORDER.csv',
+    output_file='testing_CZ_ORDER_geo.xlsx'
+)
+"""
