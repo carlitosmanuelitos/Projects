@@ -1397,3 +1397,321 @@ DATE	COUNTRY	ORDER	CART CODE	ORDERCHANNEL	ORDERTYPE	PMIORDERSTATUS	BASE STORE	DE
 12/09/2024 13:45	CZ	1024707382	1023416116	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Pick-up Point incl. VAT	DELIVERED	PACKE	4800	Strakonice	386 01	Bezděkovská 30, Tlapka		49.258043	13.905277
 05/09/2024 15:44	CZ	1024113376	1024116143	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Free Pick-up Point incl. VAT	DELIVERED	PACKE	590	Praha	140 00	Na Pankráci 1727/86, home&you		50.051156	14.439094
 03/09/2024 19:55	CZ	1023964407	1023965119	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Pick-up Point incl. VAT	DELIVERED	PACKE	6000	Praha	140 00	Na Pankráci 1727/86, home&you		50.051156	14.439094
+
+
+
+
+
+import pandas as pd
+import numpy as np
+from googlemaps import Client
+import logging
+from datetime import datetime
+from pathlib import Path
+from tqdm import tqdm
+import json
+from typing import Dict, List, Tuple, Optional
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+class StoreDistanceMapper:
+    """Handles mapping of orders to stores with distance calculations."""
+    
+    def __init__(self, api_key: str, cache_file: str = 'distance_cache.json'):
+        """Initialize the mapper with API key and cache file."""
+        self.gmaps = Client(key=api_key)
+        self.cache_file = cache_file
+        self.distance_cache = self._load_cache()
+        self.api_calls = 0
+        self.cache_hits = 0
+        
+        # Configure logging
+        log_file = f'store_mapping_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()
+            ]
+        )
+
+    def _load_cache(self) -> Dict:
+        """Load distance cache from file."""
+        try:
+            if Path(self.cache_file).exists():
+                with open(self.cache_file, 'r') as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            logging.error(f"Error loading cache: {e}")
+            return {}
+
+    def _save_cache(self) -> None:
+        """Save distance cache to file."""
+        try:
+            with open(self.cache_file, 'w') as f:
+                json.dump(self.distance_cache, f)
+        except Exception as e:
+            logging.error(f"Error saving cache: {e}")
+
+    @staticmethod
+    def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+        """Calculate haversine distance between two points."""
+        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+        dlat, dlon = lat2 - lat1, lon2 - lon1
+        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+        return 6367 * 2 * np.arcsin(np.sqrt(a))
+
+    def get_drivable_distance(self, origin: Tuple[float, float], 
+                            destination: Tuple[float, float]) -> Optional[float]:
+        """Get drivable distance between two points with caching."""
+        cache_key = f"{origin}_{destination}"
+        
+        if cache_key in self.distance_cache:
+            self.cache_hits += 1
+            logging.debug(f"Cache hit for distance: {cache_key}")
+            return self.distance_cache[cache_key]
+        
+        try:
+            time.sleep(0.1)  # Rate limiting
+            self.api_calls += 1
+            result = self.gmaps.distance_matrix(
+                origins=[origin],
+                destinations=[destination],
+                mode='driving',
+                units='metric'
+            )
+            
+            if result['status'] == 'OK':
+                distance = result['rows'][0]['elements'][0]['distance']['value'] / 1000
+                self.distance_cache[cache_key] = distance
+                
+                # Periodic cache saving
+                if self.api_calls % 100 == 0:
+                    self._save_cache()
+                    
+                return distance
+            else:
+                logging.warning(f"API returned non-OK status: {result['status']}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"Error calculating drivable distance: {e}")
+            return None
+
+    def _format_closest_store_row(self, order: pd.Series, store_info: Dict) -> Dict:
+        """Format the closest store information into a row dictionary."""
+        return {
+            'DATE': order.get('DATE', ''),
+            'COUNTRY': order.get('COUNTRY', ''),
+            'ORDER': order.get('ORDER', ''),
+            'CART CODE': order.get('CART CODE', ''),
+            'ORDERCHANNEL': order.get('ORDERCHANNEL', ''),
+            'ORDERTYPE': order.get('ORDERTYPE', ''),
+            'PMIORDERSTATUS': order.get('PMIORDERSTATUS', ''),
+            'BASE STORE': order.get('BASE STORE', ''),
+            'DELIVERY MODE': order.get('DELIVERY MODE', ''),
+            'DELIVERY STATUS': order.get('DELIVERY STATUS', ''),
+            'CARRIER': order.get('CARRIER', ''),
+            'SUBTOTAL': order.get('SUBTOTAL', ''),
+            'TOWN': order.get('TOWN', ''),
+            'POSTAL CODE': order.get('POSTAL CODE', ''),
+            'STREET NAME': order.get('STREET NAME', ''),
+            'STREET NUMBER': order.get('STREET NUMBER', ''),
+            'Latitude': order['Latitude'],
+            'Longitude': order['Longitude'],
+            'Closest Store': store_info['store']['displayname'],
+            'Linear Distance in KM': round(store_info['linear_distance'], 2),
+            'Drivable Distance in KM': round(store_info['drivable_distance'], 2) if store_info['drivable_distance'] else None,
+            'POS Latitude': store_info['store']['latitude'],
+            'POS Longitude': store_info['store']['longitude']
+        }
+
+    def _format_nearby_stores_rows(self, order: pd.Series, stores: List[Dict], distance_type: str) -> List[Dict]:
+        """Format nearby stores information into row dictionaries."""
+        formatted_rows = []
+        for store_info in stores:
+            row = {
+                'ORDER': order['ORDER'],
+                'Order Address': f"{order.get('COUNTRY', '')}, {order.get('TOWN', '')}, {order.get('POSTAL CODE', '')}, {order.get('STREET NAME', '')}, {order.get('STREET NUMBER', '')}",
+                'Latitude': order['Latitude'],
+                'Longitude': order['Longitude'],
+                'POS': store_info['store']['displayname'],
+                'POS Latitude': store_info['store']['latitude'],
+                'POS Longitude': store_info['store']['longitude']
+            }
+            
+            if distance_type == 'linear':
+                row['Linear Distance'] = round(store_info['linear_distance'], 2)
+            else:  # drivable
+                row['Drivable Distance'] = round(store_info['drivable_distance'], 2)
+            
+            formatted_rows.append(row)
+            
+        return formatted_rows
+
+    def _update_store_counts(self, closest_df: pd.DataFrame, 
+                           linear_df: pd.DataFrame, 
+                           drivable_df: pd.DataFrame) -> pd.DataFrame:
+        """Update the closest store DataFrame with store counts."""
+        # Group by ORDER to count stores within range
+        linear_counts = linear_df.groupby('ORDER').size().reset_index(name='Stores 5km Linear')
+        drivable_counts = drivable_df.groupby('ORDER').size().reset_index(name='Stores 5km Drivable')
+        
+        # Merge counts with closest store DataFrame
+        result_df = closest_df.merge(linear_counts, on='ORDER', how='left')
+        result_df = result_df.merge(drivable_counts, on='ORDER', how='left')
+        
+        # Fill NaN values with 0 (for orders with no stores in range)
+        result_df['Stores 5km Linear'] = result_df['Stores 5km Linear'].fillna(0).astype(int)
+        result_df['Stores 5km Drivable'] = result_df['Stores 5km Drivable'].fillna(0).astype(int)
+        
+        return result_df
+
+    def _find_closest_store(self, order: pd.Series, 
+                           stores_df: pd.DataFrame) -> Dict:
+        """Find the closest store using haversine distance first."""
+        min_distance = float('inf')
+        closest_store = None
+        
+        for _, store in stores_df.iterrows():
+            distance = self.haversine(
+                order['Latitude'], order['Longitude'],
+                store['latitude'], store['longitude']
+            )
+            if distance < min_distance:
+                min_distance = distance
+                closest_store = store
+        
+        # Get drivable distance for closest store
+        drivable_distance = self.get_drivable_distance(
+            (order['Latitude'], order['Longitude']),
+            (closest_store['latitude'], closest_store['longitude'])
+        )
+        
+        return {
+            'store': closest_store,
+            'linear_distance': min_distance,
+            'drivable_distance': drivable_distance
+        }
+
+    def _find_stores_within_linear(self, order: pd.Series, 
+                                 stores_df: pd.DataFrame) -> List[Dict]:
+        """Find all stores within 5km linear distance."""
+        nearby_stores = []
+        
+        for _, store in stores_df.iterrows():
+            distance = self.haversine(
+                order['Latitude'], order['Longitude'],
+                store['latitude'], store['longitude']
+            )
+            if distance <= 5:
+                nearby_stores.append({
+                    'store': store,
+                    'linear_distance': distance
+                })
+        
+        return nearby_stores
+
+    def _get_drivable_stores(self, order: pd.Series, 
+                            linear_stores: List[Dict]) -> List[Dict]:
+        """Get drivable distances for stores within linear range."""
+        drivable_stores = []
+        
+        for store_info in linear_stores:
+            drivable_distance = self.get_drivable_distance(
+                (order['Latitude'], order['Longitude']),
+                (store_info['store']['latitude'], store_info['store']['longitude'])
+            )
+            
+            if drivable_distance is not None and drivable_distance <= 5:
+                store_info['drivable_distance'] = drivable_distance
+                drivable_stores.append(store_info)
+        
+        return drivable_stores
+
+    def _create_output_sheets(self, closest_stores: List[Dict],
+                            linear_stores: List[Dict],
+                            drivable_stores: List[Dict],
+                            output_file: str) -> None:
+        """Create and save all output sheets."""
+        # Create DataFrames
+        closest_df = pd.DataFrame(closest_stores)
+        linear_df = pd.DataFrame(linear_stores)
+        drivable_df = pd.DataFrame(drivable_stores)
+        
+        # Update store counts
+        closest_df = self._update_store_counts(closest_df, linear_df, drivable_df)
+        
+        # Save to Excel
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            closest_df.to_excel(writer, sheet_name='Coordinates', index=False)
+            linear_df.to_excel(writer, sheet_name='5km Stores Linear', index=False)
+            drivable_df.to_excel(writer, sheet_name='5km Stores Drivable', index=False)
+
+    def process_orders(self, orders_df: pd.DataFrame, 
+                      stores_df: pd.DataFrame, output_file: str) -> None:
+        """Process orders and create output sheets."""
+        try:
+            # Initialize result DataFrames
+            closest_stores = []
+            stores_within_5km_linear = []
+            stores_within_5km_drivable = []
+            
+            # Process each order
+            for idx, order in tqdm(orders_df.iterrows(), total=len(orders_df), 
+                                 desc="Processing orders"):
+                if pd.isna(order['Latitude']) or pd.isna(order['Longitude']):
+                    continue
+                
+                order_location = (order['Latitude'], order['Longitude'])
+                
+                # Find closest store and stores within 5km
+                closest_store_info = self._find_closest_store(order, stores_df)
+                linear_stores = self._find_stores_within_linear(order, stores_df)
+                drivable_stores = self._get_drivable_stores(order, linear_stores)
+                
+                # Update results
+                closest_stores.append(self._format_closest_store_row(order, closest_store_info))
+                stores_within_5km_linear.extend(self._format_nearby_stores_rows(order, linear_stores, 'linear'))
+                stores_within_5km_drivable.extend(self._format_nearby_stores_rows(order, drivable_stores, 'drivable'))
+            
+            # Create output DataFrames
+            self._create_output_sheets(
+                closest_stores,
+                stores_within_5km_linear,
+                stores_within_5km_drivable,
+                output_file
+            )
+            
+            logging.info(f"Processing completed. API calls: {self.api_calls}, Cache hits: {self.cache_hits}")
+            self._save_cache()
+            
+        except Exception as e:
+            logging.error(f"Error in process_orders: {e}")
+            raise
+
+def main():
+    """Main execution function."""
+    try:
+        # Configuration
+        api_key = 'YOUR_API_KEY'
+        orders_file = 'testing_CZ_ORDER_geo.xlsx'
+        stores_file = 'CZ_POS_DATA_GUID.csv'
+        output_file = 'store_mapping_results.xlsx'
+        
+        # Load data
+        orders_df = pd.read_excel(orders_file)
+        stores_df = pd.read_csv(stores_file, delimiter=';', encoding='utf-8')
+        
+        # Initialize and run mapper
+        mapper = StoreDistanceMapper(api_key)
+        mapper.process_orders(orders_df, stores_df, output_file)
+        
+    except Exception as e:
+        logging.error(f"Error in main execution: {e}")
+        raise
+
+if __name__ == "__main__":
+    main()
