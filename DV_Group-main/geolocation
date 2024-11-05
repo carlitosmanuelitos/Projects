@@ -670,3 +670,717 @@ if __name__ == "__main__":
 5.3. Section 2
 5.4. Section 3
 6. APIs
+
+
+
+
+
+
+
+
+# Store Fulfillment Analysis System
+## Comprehensive Solution Design Document
+
+## 1. Introduction
+
+### 1.1 Executive Summary
+This document outlines the technical design for a Store Fulfillment Analysis System that evaluates the geographical relationship between customer orders and store locations. The system provides critical insights for optimizing store network coverage and improving order fulfillment capabilities.
+
+### 1.2 Business Context
+- **Primary Business Need**: Evaluate store network coverage for order fulfillment
+- **Key Business Questions**:
+  - Which stores are closest to each order?
+  - How many stores are within fulfillment range?
+  - What is the actual driving distance versus straight-line distance?
+  - Are there areas with insufficient store coverage?
+
+### 1.3 Assumptions
+#### 1.3.1 Data Assumptions
+- Order data contains valid delivery addresses
+- Store data includes accurate geographical coordinates
+- Address formats are relatively standardized within each country
+- Data volumes are manageable within API rate limits
+
+#### 1.3.2 Technical Assumptions
+- Google Maps API access is available with sufficient quota
+- AWS infrastructure is accessible for secret management
+- Local processing power is sufficient for data volume
+- Network connectivity is reliable for API calls
+
+#### 1.3.3 Business Assumptions
+- 5KM is the standard fulfillment range requirement
+- Both linear and driving distances are relevant for analysis
+- Store operating hours and capacity are not initial constraints
+
+### 1.4 Technical Context
+#### 1.4.1 System Environment
+- Python 3.x runtime environment
+- AWS cloud infrastructure
+- Local processing capabilities
+- File system storage for caching
+
+#### 1.4.2 Dependencies
+- External APIs:
+  - Google Maps Geocoding API
+  - Google Maps Distance Matrix API
+- AWS Services:
+  - AWS Secrets Manager
+  - IAM for access control
+- Python Libraries:
+  - pandas for data processing
+  - numpy for mathematical calculations
+  - boto3 for AWS integration
+
+### 1.5 Objectives
+#### 1.5.1 Primary Objectives
+1. Accurate geocoding of order addresses
+2. Efficient mapping of orders to nearby stores
+3. Precise distance calculations using multiple methods
+4. Comprehensive coverage analysis
+
+#### 1.5.2 Technical Objectives
+1. Minimize API calls through optimization
+2. Maintain high performance with large datasets
+3. Ensure reliable error handling
+4. Provide detailed logging and monitoring
+5. Enable easy maintenance and updates
+
+## 2. Architecture Assessment
+
+### 2.1 System Architecture
+#### 2.1.1 High-Level Components
+```
+[Input Layer]
+    │
+    ├── Order Data Processing
+    │   ├── Address Normalization
+    │   ├── Geocoding
+    │   └── Validation
+    │
+    ├── Store Data Processing
+    │   ├── Coordinate Validation
+    │   └── Store Information Management
+    │
+[Processing Layer]
+    │
+    ├── Distance Calculation Engine
+    │   ├── Haversine Calculator
+    │   ├── Distance Matrix Service
+    │   └── Optimization Logic
+    │
+    ├── Store Mapping Engine
+    │   ├── Proximity Analysis
+    │   ├── Coverage Calculation
+    │   └── Store Selection Logic
+    │
+[Output Layer]
+    │
+    ├── Results Generation
+    │   ├── Excel Report Creation
+    │   ├── Statistics Calculation
+    │   └── Data Visualization
+```
+
+#### 2.1.2 Component Interactions
+1. **Data Flow**
+   ```
+   Raw Data → Normalization → Geocoding → Distance Calculation → Analysis → Reporting
+   ```
+
+2. **Service Integration**
+   ```
+   AWS Secrets → API Keys → Google Services → Results → Local Storage
+   ```
+
+### 2.2 Optimization Strategy
+
+#### 2.2.1 API Call Reduction Framework
+1. **Primary Strategy**: Haversine First Approach
+   - Calculate linear distances for all stores
+   - Only calculate driving distances for stores within extended linear range
+   - Use cache for repeated calculations
+
+2. **Implementation Logic**:
+```python
+def optimize_distance_calculations(order, stores):
+    # Step 1: Calculate Haversine distances for all stores
+    linear_distances = calculate_linear_distances(order, stores)
+    
+    # Step 2: Filter stores within extended range (e.g., 7km linear)
+    potential_stores = filter_stores_within_range(linear_distances, extended_range=7)
+    
+    # Step 3: Calculate driving distances only for filtered stores
+    driving_distances = calculate_driving_distances(order, potential_stores)
+    
+    # Step 4: Final filtering for 5km requirement
+    final_stores = filter_stores_within_range(driving_distances, target_range=5)
+    
+    return final_stores
+```
+
+#### 2.2.2 Caching Strategy
+1. **Two-Level Caching**
+   - Memory cache for frequent calculations
+   - Persistent file cache for session retention
+   - Periodic cache updates and cleanup
+
+2. **Cache Structure**:
+```json
+{
+    "geocoding": {
+        "address_hash": {
+            "lat": float,
+            "lng": float,
+            "timestamp": datetime
+        }
+    },
+    "distances": {
+        "origin_dest_hash": {
+            "linear": float,
+            "driving": float,
+            "timestamp": datetime
+        }
+    }
+}
+```
+
+## 3. Integration Details
+
+### 3.1 Data Processing Pipeline
+
+#### 3.1.1 Address Processing
+1. **Normalization Steps**
+   - Remove special characters
+   - Standardize format
+   - Validate required fields
+   - Handle edge cases
+
+2. **Geocoding Process**
+   - Address validation
+   - API call optimization
+   - Error handling
+   - Result validation
+
+#### 3.1.2 Distance Calculation
+1. **Haversine Calculation**
+```python
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371  # Earth's radius in kilometers
+    
+    # Convert coordinates to radians
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    
+    return R * c
+```
+
+2. **Distance Matrix Implementation**
+```python
+def get_driving_distance(origin, destination, client):
+    try:
+        result = client.distance_matrix(
+            origins=[origin],
+            destinations=[destination],
+            mode='driving',
+            units='metric'
+        )
+        return process_distance_result(result)
+    except Exception as e:
+        handle_api_error(e)
+```
+
+### 3.2 Performance Optimization
+
+#### 3.2.1 Key Performance Indicators
+1. **API Usage Metrics**
+   - Calls per minute
+   - Cache hit ratio
+   - Error rate
+   - Response time distribution
+
+2. **Processing Metrics**
+   - Records processed per second
+   - Memory usage
+   - CPU utilization
+   - I/O operations
+
+#### 3.2.2 Optimization Techniques
+1. **Batch Processing**
+   - Group similar requests
+   - Optimize API payload size
+   - Balance batch size vs. latency
+
+2. **Parallel Processing**
+   - Multi-threading for I/O operations
+   - Process pooling for calculations
+   - Resource management
+
+### 3.3 Error Handling and Recovery
+
+#### 3.3.1 Error Categories
+1. **Data Errors**
+   - Invalid addresses
+   - Missing coordinates
+   - Format inconsistencies
+
+2. **API Errors**
+   - Rate limiting
+   - Service unavailability
+   - Invalid responses
+
+#### 3.3.2 Recovery Strategies
+1. **Automatic Retry**
+   - Exponential backoff
+   - Alternative service usage
+   - Failure logging
+
+2. **Data Recovery**
+   - Checkpoint creation
+   - Progress tracking
+   - Resume capability
+
+## 4. API Specifications
+
+### 4.1 External APIs
+
+#### 4.1.1 Google Maps APIs
+1. **Geocoding API**
+   - Endpoint: `https://maps.googleapis.com/maps/api/geocode/json`
+   - Rate Limits: 50 QPS
+   - Error Handling: Built-in retry mechanism
+
+2. **Distance Matrix API**
+   - Endpoint: `https://maps.googleapis.com/maps/api/distancematrix/json`
+   - Rate Limits: 100 QPS
+   - Optimization: Batch requests
+
+### 4.2 Internal APIs
+
+#### 4.2.1 GeoLocationMapper
+```python
+class GeoLocationMapper:
+    def map_geolocations(
+        self,
+        input_file: str,
+        output_file: str
+    ) -> None:
+        """
+        Maps physical addresses to coordinates
+        
+        Parameters:
+        - input_file: Path to CSV with address data
+        - output_file: Path for output Excel file
+        
+        Returns:
+        - None. Creates Excel file with mapped coordinates
+        """
+```
+
+#### 4.2.2 StoreDistanceMapper
+```python
+class StoreDistanceMapper:
+    def process_orders(
+        self,
+        orders_df: pd.DataFrame,
+        stores_df: pd.DataFrame,
+        output_file: str
+    ) -> None:
+        """
+        Maps orders to nearby stores
+        
+        Parameters:
+        - orders_df: DataFrame with order data
+        - stores_df: DataFrame with store data
+        - output_file: Path for output Excel file
+        
+        Returns:
+        - None. Creates Excel file with mapping results
+        """
+```
+
+## 5. Maintenance and Support
+
+### 5.1 Monitoring and Logging
+1. **Log Levels**
+   - ERROR: API failures, data errors
+   - WARNING: Performance issues, near-limit conditions
+   - INFO: Progress updates, successful operations
+   - DEBUG: Detailed operation information
+
+2. **Monitoring Metrics**
+   - API usage tracking
+   - Performance monitoring
+   - Error rate tracking
+   - Cache effectiveness
+
+### 5.2 Maintenance Procedures
+1. **Regular Maintenance**
+   - Cache cleanup
+   - Log rotation
+   - Performance optimization
+   - Data validation
+
+2. **Update Procedures**
+   - Code updates
+   - API version management
+   - Configuration updates
+   - Documentation maintenance
+
+## 6. Future Enhancements
+
+### 6.1 Potential Improvements
+1. **Technical Enhancements**
+   - Real-time processing capability
+   - Advanced caching mechanisms
+   - Machine learning for prediction
+   - Additional distance calculation methods
+
+2. **Business Features**
+   - Store capacity consideration
+   - Operating hours integration
+   - Dynamic range adjustment
+   - Cost optimization analysis
+
+### 6.2 Scalability Considerations
+1. **Vertical Scaling**
+   - Processing optimization
+   - Memory management
+   - Cache optimization
+
+2. **Horizontal Scaling**
+   - Distributed processing
+   - Load balancing
+   - Data partitioning
+
+## 7. Conclusion
+
+### 7.1 Success Criteria
+1. **Technical Success Metrics**
+   - API call reduction > 50%
+   - Cache hit ratio > 80%
+   - Processing time < 1s per record
+   - Error rate < 1%
+
+2. **Business Success Metrics**
+   - Accurate store mapping
+   - Comprehensive coverage analysis
+   - Actionable insights generation
+   - Reliable performance
+
+### 7.2 Risk Mitigation
+1. **Technical Risks**
+   - API availability
+   - Data quality
+   - Performance issues
+   - System failures
+
+2. **Business Risks**
+   - Incorrect analysis
+   - Missing coverage
+   - Incomplete insights
+   - Cost overruns
+
+
+
+
+-----------------------------------------------------------------------------------
+
+# Store Fulfillment Analysis System
+## Implementation-Specific Solution Design
+
+## 1. Introduction
+
+### 1.1 Project Overview
+This system implements a two-phase solution for store fulfillment analysis:
+1. Address Geocoding (GeoLocationMapper)
+2. Store Distance Mapping (StoreDistanceMapper)
+
+### 1.2 Assumptions
+- Input data format:
+  - Orders CSV with columns: DATE, COUNTRY, ORDER, CART CODE, etc.
+  - Stores CSV with columns: displayname, latitude, longitude, etc.
+  - Delimiter: semicolon (';')
+  - UTF-8 encoding
+- AWS environment access for API key management
+- Google Maps API services availability
+- 5km as standard fulfillment radius
+
+### 1.3 Technical Context
+- **Environment**
+  - Python 3.x
+  - AWS Secrets Manager
+  - Google Maps API Suite
+  
+- **Core Dependencies**
+  ```python
+  import pandas as pd
+  import numpy as np
+  from geopy.geocoders import GoogleV3
+  import googlemaps
+  import boto3
+  import pycountry
+  ```
+
+### 1.4 Objectives
+1. Geocode customer delivery addresses
+2. Find closest store to each order
+3. Identify stores within 5km range using:
+   - Linear distance (Haversine)
+   - Driving distance (Google Distance Matrix)
+4. Generate comprehensive analysis reports
+
+## 2. System Architecture
+
+### 2.1 Component Overview
+```
+[Access Management]
+    │
+    ├── AWS Secrets Manager Integration
+    │   └── get_secret()
+    │
+[Data Processing]
+    │
+    ├── GeoLocationMapper
+    │   ├── Address Normalization
+    │   ├── Geocoding
+    │   └── Cache Management
+    │
+    └── StoreDistanceMapper
+        ├── Distance Calculations
+        ├── Store Mapping
+        └── Results Generation
+```
+
+### 2.2 Core Classes
+
+#### GeoLocationMapper
+```python
+class GeoLocationMapper:
+    def __init__(self, api_key: str, cache_file: str = 'geolocation_cache.json'):
+        # Initialization with API key and cache setup
+        
+    def map_geolocations(self, input_file: str, output_file: str) -> None:
+        # Main processing pipeline
+```
+
+Key Features:
+- Address normalization
+- Geocoding with caching
+- Progress tracking
+- Statistical reporting
+
+#### StoreDistanceMapper
+```python
+class StoreDistanceMapper:
+    def __init__(self, api_key: str, cache_file: str = 'distance_cache.json'):
+        # Initialization with API key and cache setup
+        
+    def process_orders(self, orders_df: pd.DataFrame, 
+                      stores_df: pd.DataFrame, 
+                      output_file: str) -> None:
+        # Main processing pipeline
+```
+
+Key Features:
+- Haversine distance calculation
+- Driving distance calculation
+- Store proximity analysis
+- Multi-format reporting
+
+## 3. Implementation Details
+
+### 3.1 API Access Management
+```python
+def get_secret():
+    secret_name = "CommerceReporting/GeoLocation"
+    region_name = "eu-west-1"
+    # AWS Secrets Manager integration
+```
+
+### 3.2 Data Processing Pipeline
+
+#### Phase 1: Geocoding
+1. **Address Normalization**
+```python
+def normalize_text(text: str) -> str:
+    # ASCII normalization
+    # Special character removal
+    # Whitespace standardization
+```
+
+2. **Geocoding Process**
+```python
+def get_lat_long(self, address_components: dict) -> Tuple[Optional[float], Optional[float]]:
+    # Address validation
+    # Cache checking
+    # API call with rate limiting
+    # Result caching
+```
+
+#### Phase 2: Distance Mapping
+1. **Distance Calculation Strategy**
+```python
+def _find_closest_store(self, order: pd.Series, stores_df: pd.DataFrame) -> Dict:
+    # Initial Haversine calculation
+    # Optimized store selection
+    # Driving distance calculation
+```
+
+2. **Range Analysis**
+```python
+def _find_stores_within_linear(self, order: pd.Series, stores_df: pd.DataFrame) -> List[Dict]:
+    # 5km radius check
+    # Store filtering
+```
+
+### 3.3 Optimization Mechanisms
+
+#### Caching System
+1. **Geocoding Cache**
+```python
+{
+    "address_string": [latitude, longitude],
+    ...
+}
+```
+
+2. **Distance Cache**
+```python
+{
+    "origin_destination_key": distance_in_km,
+    ...
+}
+```
+
+#### API Call Reduction
+1. **Initial Filtering**
+   - Use Haversine distance first
+   - Only calculate driving distance for stores within extended linear range
+   - Cache all results for reuse
+
+2. **Batch Processing**
+   - Progress tracking with tqdm
+   - Periodic cache saving
+   - Error handling and logging
+
+## 4. Performance KPIs
+
+### 4.1 Processing Metrics
+```python
+def _log_statistics(self, df: pd.DataFrame, unmapped_df: pd.DataFrame) -> None:
+    # Total addresses processed
+    # Success rate
+    # API call count
+    # Cache efficiency
+```
+
+### 4.2 Output Format
+1. **Coordinates Sheet**
+   - Order details
+   - Geocoded coordinates
+   - Closest store information
+   - Distance metrics
+
+2. **5km Stores Linear Sheet**
+   - Orders within linear range
+   - Store counts
+   - Distance measurements
+
+3. **5km Stores Drivable Sheet**
+   - Orders within driving range
+   - Store counts
+   - Actual driving distances
+
+## 5. Error Handling
+
+### 5.1 Logging System
+```python
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f'geolocation_mapping_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
+```
+
+### 5.2 Error Categories
+1. **API Errors**
+   - Rate limiting
+   - Service unavailability
+   - Invalid responses
+
+2. **Data Errors**
+   - Missing fields
+   - Invalid coordinates
+   - Format inconsistencies
+
+## 6. Usage Example
+
+```python
+def main():
+    # Get API key
+    api_key = get_secret()
+    
+    # Phase 1: Geocoding
+    mapper = GeoLocationMapper(api_key=api_key)
+    mapper.map_geolocations(
+        input_file='testing_DE_ORDER.csv',
+        output_file='testing_DE_ORDER_mapped.xlsx'
+    )
+    
+    # Phase 2: Distance Mapping
+    distance_mapper = StoreDistanceMapper(api_key=api_key)
+    distance_mapper.process_orders(
+        orders_df=orders_df,
+        stores_df=stores_df,
+        output_file='F_DE_distance_mapping_results.xlsx'
+    )
+```
+
+## 7. Maintenance and Support
+
+### 7.1 Cache Management
+- Periodic cache cleanup
+- Invalid entry removal
+- Cache size monitoring
+
+### 7.2 Performance Monitoring
+- API call tracking
+- Processing time analysis
+- Error rate monitoring
+
+### 7.3 Data Quality
+- Address validation
+- Coordinate verification
+- Distance calculation accuracy
+
+## 8. Future Enhancements
+
+### 8.1 Potential Improvements
+1. **Processing Optimization**
+   - Parallel processing implementation
+   - Batch API requests
+   - Advanced caching strategies
+
+2. **Feature Additions**
+   - Real-time processing capability
+   - Additional distance calculation methods
+   - Enhanced reporting options
+
+### 8.2 Scalability Considerations
+1. **Data Volume Handling**
+   - Chunked processing
+   - Distributed computation
+   - Memory optimization
+
+2. **API Management**
+   - Multiple API key support
+   - Service provider redundancy
+   - Rate limit optimization
