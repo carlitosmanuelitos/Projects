@@ -1,12 +1,19 @@
+#!pip install geopy pycountry
+#!pip install --use-pep517 googlemaps
+
 import pandas as pd
 import numpy as np
 from geopy.geocoders import GoogleV3
-import pycountry
-import logging
-from tqdm import tqdm
 import googlemaps
 import boto3
 from botocore.exceptions import ClientError
+import pycountry
+
+import logging
+from tqdm import tqdm
+from typing import Tuple, Optional, Dict
+from datetime import datetime
+from pathlib import Path
 import json
 import unicodedata
 import re
@@ -14,6 +21,7 @@ import time
 import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 
 # GENERATE TESTING DATA
 def reduce_csv_files(order_file, pos_file, output_order_file, output_pos_file, percentage=0.05):
@@ -60,6 +68,7 @@ def get_current_iam_role():
 # Example usage
 get_current_iam_role()
 
+
 # ------- PART0. API KEYS ACCESS MANAGMENT
 def get_secret():
     secret_name = "CommerceReporting/GeoLocation"
@@ -98,827 +107,17 @@ def get_secret():
 geocoding_api_key = get_secret()
 print(f"Geocoding API Key: {geocoding_api_key}")
 
+
+
+
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 #### ----------------------------------------------------PART 1 PART 1 PART 1 PART 1 ---------------------------------------------------------------------- #####
-#### --------------------------------------------------------------  ------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-
-def map_geolocations_google(input_file, output_file, api_key):
-    """
-    Find all stores within a specified Haversine distance from the order location.
-
-    Parameters:
-    order_lat (float): Latitude of the order location.
-    order_long (float): Longitude of the order location.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    max_distance (float): Maximum Haversine distance in kilometers.
-
-    Returns:
-    list: List of tuples containing store displayname, latitude, longitude, and Haversine distance.
-    """
-    data = pd.read_csv(input_file, delimiter=';', encoding='utf-8')
-    df = pd.DataFrame(data)
-
-    geolocator = GoogleV3(api_key=api_key)
-    cache = {}
-    total_calls = 0
-
-    def normalize_text(text):
-        """Normalize text to ASCII."""
-        if isinstance(text, str):
-            return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
-        return text
-
-    def remove_hidden_chars(text):
-        """Remove hidden characters from text."""
-        if isinstance(text, str):
-            return ''.join(c for c in text if c.isprintable())
-        return text
-
-    def standardize_address(address):
-        """Standardize address format."""
-        if isinstance(address, str):
-            address = re.sub(r'\s+', ' ', address)
-            address = re.sub(r'[^\w\s,]', '', address)
-        return address
-
-    df = df.applymap(normalize_text)
-    df = df.applymap(remove_hidden_chars)
-    df['STREET NAME'] = df['STREET NAME'].apply(standardize_address)
-    df['TOWN'] = df['TOWN'].apply(standardize_address)
-
-    def get_country_name(country_code):
-        """Get country name from country code."""
-        try:
-            return pycountry.countries.get(alpha_2=country_code).name
-        except AttributeError:
-            logging.warning(f"Country code {country_code} not found")
-            return country_code
-
-    def get_lat_long(town, country_code, postal_code, street_name, street_number):
-        """Get latitude and longitude for an address."""
-        nonlocal total_calls
-        try:
-            if pd.isna(town) or pd.isna(country_code) or pd.isna(postal_code) or pd.isna(street_name):
-                return None, None
-            country = get_country_name(country_code)
-            if pd.isna(street_number):
-                address = f"{street_name}, {postal_code} {town}, {country}"
-            else:
-                address = f"{street_name} {street_number}, {postal_code} {town}, {country}"
-            if address in cache:
-                logging.info(f"Using cached result for: {address}")
-                return cache[address]
-            location = geolocator.geocode(address)
-            total_calls += 1
-            if location:
-                cache[address] = (location.latitude, location.longitude)
-                return location.latitude, location.longitude
-            else:
-                logging.warning(f"Geolocation not found for: {address}")
-                return None, None
-        except Exception as e:
-            logging.error(f"Error fetching geolocation for {address}: {e}")
-            return None, None
-        
-    # Initialize the progress bar
-    tqdm.pandas(desc="Mapping geolocations")
-    logging.info("Applying geolocation mapping")
-
-    # Apply the function to each row with a progress bar
-    df['Latitude'], df['Longitude'] = zip(*df.progress_apply(lambda row: get_lat_long(row['TOWN'], row['COUNTRY'], row['POSTAL CODE'], row['STREET NAME'], row['STREET NUMBER']), axis=1))
-
-    # Create a DataFrame for unmapped addresses
-    unmapped_df = df[df['Latitude'].isna() | df['Longitude'].isna()]
-
-    # Save the updated data and unmapped data to an Excel file with two sheets
-    with pd.ExcelWriter(output_file) as writer:
-        df.to_excel(writer, sheet_name='Coordinates', index=False)
-        unmapped_df.to_excel(writer, sheet_name='Unmapped', index=False)
-    
-    # Debug statements
-    unmapped_count = unmapped_df.shape[0]
-    total_rows = df.shape[0]
-    unmapped_percentage = (unmapped_count / total_rows) * 100
-    unique_addresses = len(cache)
-
-    logging.info(f"Number of unmapped addresses: {unmapped_count}")
-    logging.info(f"Total number of addresses: {total_rows}")
-    logging.info(f"Percentage of unmapped addresses: {unmapped_percentage:.2f}%")
-    logging.info(f"Number of unique addresses: {unique_addresses}")
-    logging.info(f"Number of API calls made: {total_calls}")
-    logging.info(f"Geolocation data has been added and saved to '{output_file}'")
-    return df
-
-# Example usage
-#input_file = 'testing_CZ_ORDER.csv'
-#output_file = 'testing_CZ_ORDER_geo.xlsx'
-#map_geolocations_google(input_file, output_file, geocoding_api_key)
-
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ----------------------------------------------------PART 2 PART 2 PART 2 PART 2 ---------------------------------------------------------------------- #####
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 #### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 
-
-# ------- PART2. MAP THE CLOSEST STORE USING THE HAVERSINE DISTANCE AND THEN MAPPING THE DRIVABLE DISTANCE
-def haversine(lat1, lon1, lat2, lon2):
-    """
-    Calculate the great circle distance in kilometers between two points 
-    on the earth (specified in decimal degrees)
-    """
-    # convert decimal degrees to radians 
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    # haversine formula 
-    dlat = lat2 - lat1 
-    dlon = lon2 - lon1 
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(a)) 
-    km = 6367 * c
-    return km
-
-# Function to get drivable distance using Google Distance Matrix API
-def get_drivable_distance(gmaps, origin, destination):
-    """
-    Get the drivable distance between two points using Google Distance Matrix API.
-
-    Parameters:
-    gmaps (googlemaps.Client): Google Maps client.
-    origin (tuple): Origin coordinates (latitude, longitude).
-    destination (tuple): Destination coordinates (latitude, longitude).
-
-    Returns:
-    float: Drivable distance in kilometers.
-    """
-    try:
-        result = gmaps.distance_matrix(origins=[origin], destinations=[destination], mode='driving')
-        distance = result['rows'][0]['elements'][0]['distance']['value']  # distance in meters
-        return distance / 1000  # convert to kilometers
-    except Exception as e:
-        logging.error(f"Error fetching drivable distance: {e}")
-        return None
-
-# Function to find the closest store using Haversine distance and then get drivable distance
-def find_closest_store(order_lat, order_long, stores_df, cache, gmaps):
-    """
-    Find the closest store to the given order location using Haversine distance and Google Distance Matrix API.
-
-    Parameters:
-    order_lat (float): Latitude of the order location.
-    order_long (float): Longitude of the order location.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    cache (dict): Cache to store previously computed distances.
-    gmaps (googlemaps.Client): Google Maps client.
-
-    Returns:
-    tuple: Closest store displayname, linear distance in KM, drivable distance in KM, POS Latitude, POS Longitude.
-    """
-    location_key = (order_lat, order_long)
-    if location_key in cache:
-        logging.info(f"Using cached result for location: {location_key}")
-        return cache[location_key]
-
-    min_distance = float('inf')
-    closest_store = None
-    linear_distance = None
-
-    for index, row in stores_df.iterrows():
-        store_lat = row['latitude']
-        store_long = row['longitude']
-        distance = haversine(order_lat, order_long, store_lat, store_long)
-        if distance < min_distance:
-            min_distance = distance
-            closest_store = (row['displayname'], store_lat, store_long)
-            linear_distance = distance
-
-    # Call Google Distance Matrix API for drivable distance
-    drivable_distance = get_drivable_distance(gmaps, (order_lat, order_long), (closest_store[1], closest_store[2]))
-    closest_store_info = (closest_store[0], linear_distance, drivable_distance, closest_store[1], closest_store[2])
-
-    cache[location_key] = closest_store_info
-    return closest_store_info
-
-# Append to DF
-def add_closest_store_info(orders_df, stores_df, gmaps):
-    """
-    Add closest store information to the orders DataFrame using Haversine distance and Google Distance Matrix API.
-
-    Parameters:
-    orders_df (pd.DataFrame): DataFrame containing order information with latitude and longitude.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    gmaps (googlemaps.Client): Google Maps client.
-
-    Returns:
-    pd.DataFrame: Updated orders DataFrame with closest store information.
-    """
-    cache = {}
-    total_distances_calculated = 0
-    total_calls = 0
-
-    def get_closest_store(row):
-        nonlocal total_distances_calculated, total_calls
-        if pd.isna(row['Latitude']) or pd.isna(row['Longitude']):
-            return (None, None, None, None, None)
-        closest_store = find_closest_store(row['Latitude'], row['Longitude'], stores_df, cache, gmaps)
-        total_distances_calculated += 1
-        if closest_store not in cache.values():
-            total_calls += 1
-        return closest_store
-    
-    tqdm.pandas(desc="Processing orders")
-    logging.info("Applying geolocation mapping")
-    closest_store_info = orders_df.progress_apply(get_closest_store, axis=1)
-    
-    orders_df['Closest Store'] = closest_store_info.apply(lambda x: x[0])
-    orders_df['Linear Distance in KM'] = closest_store_info.apply(lambda x: x[1])
-    orders_df['Drivable Distance in KM'] = closest_store_info.apply(lambda x: x[2])
-    orders_df['POS Latitude'] = closest_store_info.apply(lambda x: x[3])
-    orders_df['POS Longitude'] = closest_store_info.apply(lambda x: x[4])
-    unique_addresses = len(cache)
-
-    logging.info(f"Total number of distances calculated: {total_distances_calculated}")
-    logging.info(f"Number of unique distances calculated: {unique_addresses}")
-    logging.info(f"Number of API calls made: {total_calls}")
-
-    return orders_df
-
-# Master Function - Run Closest Store Pipeline
-def process_geolocation_data(orders_file, stores_file, output_file, api_key):
-    """
-    Master Function
-
-    Parameters:
-    orders_file (str): Path to the input Excel file with order geolocations.
-    stores_file (str): Path to the input CSV file with store geolocations.
-    output_file (str): Path to save the output Excel file with closest store information.
-    api_key (str): API key for Google Maps.
-
-    Returns: Dataframe with all stored info.
-    """
-    logging.info("Loading orders and stores data")
-    
-    try:
-        orders_df = pd.read_excel(orders_file, sheet_name='Coordinates')
-        orders_df.dropna(subset=['Latitude', 'Longitude'], inplace=True)
-        stores_df = pd.read_csv(stores_file, delimiter=';', encoding='utf-8')
-        
-        # Initialize the Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
-        logging.info("Adding closest store information to orders DataFrame")
-        updated_orders_df = add_closest_store_info(orders_df, stores_df, gmaps)
-
-        logging.info("Saving updated orders data to Excel file")
-        with pd.ExcelWriter(output_file) as writer:
-            updated_orders_df.to_excel(writer, sheet_name='Coordinates', index=False)
-
-        logging.info(f"Updated orders data with closest store information has been saved to '{output_file}'")
-    
-    except Exception as e:
-        logging.error(f"Error processing geolocation data: {e}")
-
-
-# Example usage
-orders_file = 'CZ2_ORDER_DATA_finaloutput.xlsx'
-stores_file = 'CZ_POS_DATA_GUID.csv'
-output_file = 'CZ2_foutput_geolocation.xlsx'
-
-# Initialize the Google Maps client
-gmaps = googlemaps.Client(key=geocoding_api_key)
-
-# Call the function
-#process_geolocation_data(orders_file, stores_file, output_file, geocoding_api_key)
-
-
-
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ----------------------------------------------------PART 3 PART 3 PART 3 PART 3 ---------------------------------------------------------------------- #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
-
-def haversine(lat1, lon1, lat2, lon2):
-    """
-    Calculate the great circle distance in kilometers between two points 
-    on the earth (specified in decimal degrees)
-    """
-    # convert decimal degrees to radians 
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    # haversine formula 
-    dlat = lat2 - lat1 
-    dlon = lon2 - lon1 
-    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-    c = 2 * np.arcsin(np.sqrt(a)) 
-    km = 6367 * c
-    return km
-
-# Function to find the closest store using Haversine distance and then get drivable distance
-def find_closest_store(order_lat, order_long, stores_df, cache, gmaps):
-    """
-    Find the closest store to the given order location using Haversine distance and Google Distance Matrix API.
-
-    Parameters:
-    order_lat (float): Latitude of the order location.
-    order_long (float): Longitude of the order location.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    cache (dict): Cache to store previously computed distances.
-    gmaps (googlemaps.Client): Google Maps client.
-
-    Returns:
-    tuple: Closest store displayname, linear distance in KM, drivable distance in KM, POS Latitude, POS Longitude.
-    """
-    location_key = (order_lat, order_long)
-    if location_key in cache:
-        logging.info(f"Using cached result for location: {location_key}")
-        return cache[location_key]
-
-    min_distance = float('inf')
-    closest_store = None
-    linear_distance = None
-
-    for index, row in stores_df.iterrows():
-        store_lat = row['latitude']
-        store_long = row['longitude']
-        distance = haversine(order_lat, order_long, store_lat, store_long)
-        if distance < min_distance:
-            min_distance = distance
-            closest_store = (row['displayname'], store_lat, store_long)
-            linear_distance = distance
-
-    # Call Google Distance Matrix API for drivable distance
-    drivable_distance = get_drivable_distance(gmaps, (order_lat, order_long), (closest_store[1], closest_store[2]))
-    closest_store_info = (closest_store[0], linear_distance, drivable_distance, closest_store[1], closest_store[2])
-
-    cache[location_key] = closest_store_info
-    return closest_store_info
-
-# Function to get drivable distance using Google Distance Matrix API
-def get_drivable_distance(gmaps, origin, destination):
-    """
-    Get the drivable distance between two points using Google Distance Matrix API.
-
-    Parameters:
-    gmaps (googlemaps.Client): Google Maps client.
-    origin (tuple): Origin coordinates (latitude, longitude).
-    destination (tuple): Destination coordinates (latitude, longitude).
-
-    Returns:
-    float: Drivable distance in kilometers.
-    """
-    try:
-        result = gmaps.distance_matrix(origins=[origin], destinations=[destination], mode='driving')
-        distance = result['rows'][0]['elements'][0]['distance']['value']  # distance in meters
-        return distance / 1000  # convert to kilometers
-    except Exception as e:
-        logging.error(f"Error getting drivable distance: {e}")
-        return None
-
-# Function to find stores within a specified Haversine distance
-def find_stores_within_haversine(order_lat, order_long, stores_df, max_distance=5):
-    """
-    Find all stores within a specified Haversine distance from the order location.
-
-    Parameters:
-    order_lat (float): Latitude of the order location.
-    order_long (float): Longitude of the order location.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    max_distance (float): Maximum Haversine distance in kilometers.
-
-    Returns:
-    list: List of tuples containing store displayname, latitude, longitude, and Haversine distance.
-    """
-    stores_within_range = []
-
-    for index, row in stores_df.iterrows():
-        store_lat = row['latitude']
-        store_long = row['longitude']
-        distance = haversine(order_lat, order_long, store_lat, store_long)
-        if distance <= max_distance:
-            stores_within_range.append((row['displayname'], store_lat, store_long, distance))
-
-    return stores_within_range
-
-# Create Haversine Distance sheet
-def create_haversine_sheet(orders_df, stores_df, output_file):
-    """
-    Create a new sheet with stores within 5km Haversine distance.
-
-    Parameters:
-    orders_df (pd.DataFrame): DataFrame containing order information with latitude and longitude.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    output_file (str): Path to save the output Excel file.
-
-    Returns:
-    pd.DataFrame: DataFrame with Haversine distance information.
-    """
-    haversine_data = []
-
-    for index, row in orders_df.iterrows():
-        if pd.isna(row['Latitude']) or pd.isna(row['Longitude']):
-            continue
-        order_address = f"{row['COUNTRY']}, {row['TOWN']}, {row['POSTAL CODE']}, {row['STREET NAME']}, {row['STREET NUMBER']}"
-        stores_within_range = find_stores_within_haversine(row['Latitude'], row['Longitude'], stores_df)
-        for store in stores_within_range:
-            haversine_data.append((row['ORDER'], order_address, row['Latitude'], row['Longitude'], *store))
-
-    # Create a DataFrame for the Haversine sheet
-    haversine_df = pd.DataFrame(haversine_data, columns=['ORDER', 'Order Address', 'Latitude', 'Longitude', 'POS', 'POS Latitude', 'POS Longitude', 'Haversine Distance'])
-
-    # Check if the file exists, if not create it
-    if not os.path.exists(output_file):
-        with pd.ExcelWriter(output_file, mode='w', engine='openpyxl') as writer:
-            haversine_df.to_excel(writer, sheet_name='Haversine Distance', index=False)
-    else:
-        with pd.ExcelWriter(output_file, mode='a', engine='openpyxl') as writer:
-            haversine_df.to_excel(writer, sheet_name='Haversine Distance', index=False)
-
-    return haversine_df
-
-# Create Drivable Distance sheet
-def create_drivable_sheet(haversine_df, gmaps, output_file):
-    """
-    Create a new sheet with stores within 5km drivable distance.
-
-    Parameters:
-    haversine_df (pd.DataFrame): DataFrame with Haversine distance information.
-    gmaps (googlemaps.Client): Google Maps client.
-    output_file (str): Path to save the output Excel file.
-
-    Returns:
-    pd.DataFrame: DataFrame with drivable distance information.
-    """
-    drivable_data = []
-
-    for index, row in haversine_df.iterrows():
-        if pd.isna(row['Latitude']) or pd.isna(row['Longitude']):
-            continue
-        drivable_distance = get_drivable_distance(gmaps, (row['Latitude'], row['Longitude']), (row['POS Latitude'], row['POS Longitude']))
-        if drivable_distance <= 5:
-            drivable_data.append((row['ORDER'], row['Order Address'], row['Latitude'], row['Longitude'], row['POS'], row['POS Latitude'], row['POS Longitude'], drivable_distance))
-
-    # Create a DataFrame for the Drivable sheet
-    drivable_df = pd.DataFrame(drivable_data, columns=['ORDER', 'Order Address', 'Latitude', 'Longitude', 'POS', 'POS Latitude', 'POS Longitude', 'Drivable Distance'])
-
-    # Check if the file exists, if not create it
-    if not os.path.exists(output_file):
-        with pd.ExcelWriter(output_file, mode='w', engine='openpyxl') as writer:
-            drivable_df.to_excel(writer, sheet_name='Drivable Distance', index=False)
-    else:
-        with pd.ExcelWriter(output_file, mode='a', engine='openpyxl') as writer:
-            drivable_df.to_excel(writer, sheet_name='Drivable Distance', index=False)
-
-    return drivable_df
-
-
-# Append to DF
-def add_closest_store_info(orders_df, stores_df, gmaps, output_file):
-    """
-    Add closest store information to the orders DataFrame using Haversine distance and Google Distance Matrix API.
-
-    Parameters:
-    orders_df (pd.DataFrame): DataFrame containing order information with latitude and longitude.
-    stores_df (pd.DataFrame): DataFrame containing store information with latitude and longitude.
-    gmaps (googlemaps.Client): Google Maps client.
-    output_file (str): Path to save the output Excel file.
-
-    Returns:
-    pd.DataFrame: Updated orders DataFrame with closest store information.
-    """
-    cache = {}
-    total_distances_calculated = 0
-    total_calls = 0
-
-    def get_closest_store(row):
-        nonlocal total_distances_calculated, total_calls
-        if pd.isna(row['Latitude']) or pd.isna(row['Longitude']):
-            return (None, None, None, None, None)
-        closest_store = find_closest_store(row['Latitude'], row['Longitude'], stores_df, cache, gmaps)
-        total_distances_calculated += 1
-        if closest_store not in cache.values():
-            total_calls += 1
-        return closest_store
-    
-    tqdm.pandas(desc="Processing orders")
-    logging.info("Applying geolocation mapping")
-    closest_store_info = orders_df.progress_apply(get_closest_store, axis=1)
-    
-    orders_df['Closest Store'] = closest_store_info.apply(lambda x: x[0])
-    orders_df['Linear Distance in KM'] = closest_store_info.apply(lambda x: x[1])
-    orders_df['Drivable Distance in KM'] = closest_store_info.apply(lambda x: x[2])
-    orders_df['POS Latitude'] = closest_store_info.apply(lambda x: x[3])
-    orders_df['POS Longitude'] = closest_store_info.apply(lambda x: x[4])
-
-    unique_addresses = len(cache)
-
-    logging.info(f"Total number of distances calculated: {total_distances_calculated}")
-    logging.info(f"Number of unique distances calculated: {unique_addresses}")
-    logging.info(f"Number of API calls made: {total_calls}")
-
-    return orders_df
-
-# Function to add store counts to Coordinates sheet
-def add_store_counts_to_coordinates(output_file):
-    """
-    Add columns for number of stores within 5km linear and drivable distances to the Coordinates sheet.
-
-    Parameters:
-    output_file (str): Path to the output Excel file.
-    """
-    # Load the existing sheets
-    coordinates_df = pd.read_excel(output_file, sheet_name='Coordinates')
-    haversine_df = pd.read_excel(output_file, sheet_name='Haversine Distance')
-    drivable_df = pd.read_excel(output_file, sheet_name='Drivable Distance')
-
-    # Count the number of stores within 5km linear distance for each order
-    stores_5km_linear = haversine_df.groupby('ORDER').size().reindex(coordinates_df['ORDER'], fill_value=0)
-    coordinates_df['Stores 5km Linear'] = stores_5km_linear.values
-
-    # Count the number of stores within 5km drivable distance for each order
-    stores_5km_drivable = drivable_df.groupby('ORDER').size().reindex(coordinates_df['ORDER'], fill_value=0)
-    coordinates_df['Stores 5km Drivable'] = stores_5km_drivable.values
-
-    # Save the updated Coordinates sheet back to the Excel file
-    with pd.ExcelWriter(output_file, mode='a', engine='openpyxl', if_sheet_exists='replace') as writer:
-        coordinates_df.to_excel(writer, sheet_name='Coordinates', index=False)
-
-# Master Function - Run Closest Store Pipeline
-def process_geolocation_data(orders_file, stores_file, output_file, api_key):
-    """
-    Master Function
-
-    Parameters:
-    orders_file (str): Path to the input Excel file with order geolocations.
-    stores_file (str): Path to the input CSV file with store geolocations.
-    output_file (str): Path to save the output Excel file with closest store information.
-    api_key (str): API key for Google Maps.
-
-    Returns: Dataframe with all stored info.
-    """
-    logging.info("Loading orders and stores data")
-    
-    try:
-        # Ensure the output directory exists
-        output_dir = os.path.dirname(output_file)
-        if output_dir and not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        
-        orders_df = pd.read_excel(orders_file, sheet_name='Coordinates')
-        orders_df.dropna(subset=['Latitude', 'Longitude'], inplace=True)
-        
-        stores_df = pd.read_csv(stores_file, delimiter=';', encoding='utf-8')
-        
-        # Initialize the Google Maps client
-        gmaps = googlemaps.Client(key=api_key)
-        
-        logging.info("Adding closest store information to orders DataFrame")
-        updated_orders_df = add_closest_store_info(orders_df, stores_df, gmaps, output_file)
-
-        logging.info("Creating Haversine Distance sheet")
-        haversine_df = create_haversine_sheet(orders_df, stores_df, output_file)
-
-        logging.info("Creating Drivable Distance sheet")
-        drivable_df = create_drivable_sheet(haversine_df, gmaps, output_file)
-
-        logging.info("Adding store counts to Coordinates sheet")
-        add_store_counts_to_coordinates(output_file)
-
-        logging.info(f"Updated orders data with closest store information has been saved to '{output_file}'")
-    
-    except Exception as e:
-        logging.error(f"Error processing geolocation data: {e}")
-
-
-# Define file paths and API key
-orders_file = 'testing_CZ_ORDER_geo.xlsx'
-stores_file = 'CZ_POS_DATA_GUID.csv'
-output_file = 'testing_CZ_final_geo.xlsx'
-
-# Call the master function to process geolocation data
-process_geolocation_data(orders_file, stores_file, output_file, geocoding_api_key)
-
-
-2024-10-31 18:11:22,609 - INFO - Loading orders and stores data
-2024-10-31 18:11:23,076 - INFO - API queries_quota: 60
-2024-10-31 18:11:23,077 - INFO - Adding closest store information to orders DataFrame
-2024-10-31 18:11:23,080 - INFO - Applying geolocation mapping
-Processing orders:   3%|▎         | 30/1108 [00:01<01:05, 16.45it/s]2024-10-31 18:11:24,834 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   4%|▍         | 47/1108 [00:02<00:51, 20.42it/s]2024-10-31 18:11:25,791 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   5%|▍         | 50/1108 [00:02<00:46, 22.67it/s]2024-10-31 18:11:25,879 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   5%|▍         | 54/1108 [00:02<00:41, 25.28it/s]2024-10-31 18:11:25,977 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   6%|▌         | 61/1108 [00:03<00:40, 25.64it/s]2024-10-31 18:11:26,191 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:26,264 - INFO - Using cached result for location: (49.15177809999999, 16.4999527)
-Processing orders:   6%|▋         | 71/1108 [00:03<00:43, 23.77it/s]2024-10-31 18:11:26,637 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   7%|▋         | 75/1108 [00:03<00:41, 24.60it/s]2024-10-31 18:11:26,750 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:26,793 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:   8%|▊         | 86/1108 [00:04<00:39, 26.07it/s]2024-10-31 18:11:27,179 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  11%|█         | 117/1108 [00:05<00:52, 18.89it/s]2024-10-31 18:11:28,723 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  11%|█         | 121/1108 [00:05<00:45, 21.46it/s]2024-10-31 18:11:28,817 - INFO - Using cached result for location: (49.8370379, 18.2591519)
-Processing orders:  11%|█         | 124/1108 [00:05<00:43, 22.62it/s]2024-10-31 18:11:28,932 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  13%|█▎        | 143/1108 [00:06<00:45, 21.04it/s]2024-10-31 18:11:29,899 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  14%|█▍        | 156/1108 [00:07<00:46, 20.37it/s]2024-10-31 18:11:30,549 - INFO - Using cached result for location: (49.4922339, 16.6572855)
-Processing orders:  16%|█▌        | 174/1108 [00:08<00:43, 21.67it/s]2024-10-31 18:11:31,341 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  16%|█▌        | 180/1108 [00:08<00:46, 19.88it/s]2024-10-31 18:11:31,613 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  18%|█▊        | 194/1108 [00:09<00:45, 20.18it/s]2024-10-31 18:11:32,312 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:32,355 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  19%|█▊        | 205/1108 [00:09<00:43, 20.67it/s]2024-10-31 18:11:32,828 - INFO - Using cached result for location: (50.172406, 12.646944)
-Processing orders:  19%|█▉        | 215/1108 [00:10<00:39, 22.59it/s]2024-10-31 18:11:33,337 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  20%|██        | 226/1108 [00:10<00:47, 18.70it/s]2024-10-31 18:11:33,902 - INFO - Using cached result for location: (49.2092176, 16.6875198)
-2024-10-31 18:11:33,903 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  22%|██▏       | 243/1108 [00:11<00:42, 20.29it/s]2024-10-31 18:11:34,643 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  22%|██▏       | 247/1108 [00:11<00:39, 21.72it/s]2024-10-31 18:11:34,797 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:34,798 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  23%|██▎       | 255/1108 [00:11<00:38, 22.13it/s]2024-10-31 18:11:35,054 - INFO - Using cached result for location: (49.8370379, 18.2591519)
-Processing orders:  28%|██▊       | 310/1108 [00:14<00:36, 21.86it/s]2024-10-31 18:11:37,603 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  29%|██▉       | 320/1108 [00:15<00:41, 19.20it/s]2024-10-31 18:11:38,123 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  29%|██▉       | 326/1108 [00:15<00:36, 21.16it/s]2024-10-31 18:11:38,409 - INFO - Using cached result for location: (50.4884329, 13.4389347)
-Processing orders:  31%|███       | 339/1108 [00:15<00:34, 22.48it/s]2024-10-31 18:11:39,015 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  33%|███▎      | 361/1108 [00:16<00:35, 20.91it/s]2024-10-31 18:11:40,029 - INFO - Using cached result for location: (50.0918972, 14.4483184)
-Processing orders:  34%|███▍      | 374/1108 [00:17<00:32, 22.57it/s]2024-10-31 18:11:40,561 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:40,562 - INFO - Using cached result for location: (49.8360552, 18.1827149)
-Processing orders:  34%|███▍      | 381/1108 [00:17<00:30, 24.10it/s]2024-10-31 18:11:40,882 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  36%|███▌      | 399/1108 [00:18<00:33, 21.25it/s]2024-10-31 18:11:41,722 - INFO - Using cached result for location: (49.81341, 18.3363689)
-Processing orders:  37%|███▋      | 414/1108 [00:19<00:34, 19.85it/s]2024-10-31 18:11:42,468 - INFO - Using cached result for location: (50.2159776, 16.3032277)
-2024-10-31 18:11:42,469 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  38%|███▊      | 418/1108 [00:19<00:29, 23.66it/s]2024-10-31 18:11:42,556 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  38%|███▊      | 425/1108 [00:19<00:28, 24.04it/s]2024-10-31 18:11:42,788 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  39%|███▊      | 428/1108 [00:19<00:27, 24.48it/s]2024-10-31 18:11:42,946 - INFO - Using cached result for location: (50.0346049, 15.2181971)
-2024-10-31 18:11:42,989 - INFO - Using cached result for location: (50.0817048, 14.3541952)
-Processing orders:  40%|███▉      | 442/1108 [00:20<00:32, 20.42it/s]2024-10-31 18:11:43,647 - INFO - Using cached result for location: (50.0052432, 14.4163292)
-Processing orders:  41%|████      | 457/1108 [00:21<00:36, 17.99it/s]2024-10-31 18:11:44,353 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:44,354 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  42%|████▏     | 462/1108 [00:21<00:28, 22.93it/s]2024-10-31 18:11:44,613 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  43%|████▎     | 474/1108 [00:21<00:29, 21.62it/s]2024-10-31 18:11:45,156 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  44%|████▍     | 489/1108 [00:22<00:31, 19.96it/s]2024-10-31 18:11:45,796 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:45,841 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  45%|████▍     | 497/1108 [00:22<00:24, 24.45it/s]2024-10-31 18:11:46,139 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  47%|████▋     | 519/1108 [00:23<00:26, 21.93it/s]2024-10-31 18:11:47,043 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  48%|████▊     | 528/1108 [00:24<00:26, 22.11it/s]2024-10-31 18:11:47,539 - INFO - Using cached result for location: (50.1998013, 15.8598672)
-Processing orders:  48%|████▊     | 535/1108 [00:24<00:28, 20.39it/s]2024-10-31 18:11:47,869 - INFO - Using cached result for location: (49.2854666, 15.4811879)
-Processing orders:  49%|████▊     | 538/1108 [00:24<00:26, 21.75it/s]2024-10-31 18:11:47,915 - INFO - Using cached result for location: (50.511349, 16.019362)
-2024-10-31 18:11:47,959 - INFO - Using cached result for location: (49.7790556, 14.6844481)
-Processing orders:  49%|████▉     | 545/1108 [00:25<00:24, 23.06it/s]2024-10-31 18:11:48,267 - INFO - Using cached result for location: (50.03044999999999, 15.206516)
-Processing orders:  50%|█████     | 555/1108 [00:25<00:23, 23.32it/s]2024-10-31 18:11:48,598 - INFO - Using cached result for location: (49.8360552, 18.1827149)
-Processing orders:  52%|█████▏    | 579/1108 [00:26<00:25, 20.69it/s]2024-10-31 18:11:49,746 - INFO - Using cached result for location: (48.8087635, 16.6398571)
-2024-10-31 18:11:49,819 - INFO - Using cached result for location: (49.8531863, 13.9812724)
-2024-10-31 18:11:49,820 - INFO - Using cached result for location: (48.9960538, 14.4947862)
-Processing orders:  53%|█████▎    | 584/1108 [00:26<00:20, 25.89it/s]2024-10-31 18:11:49,945 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  55%|█████▍    | 605/1108 [00:27<00:23, 21.63it/s]2024-10-31 18:11:50,959 - INFO - Using cached result for location: (48.9960538, 14.4947862)
-Processing orders:  55%|█████▍    | 608/1108 [00:27<00:22, 22.71it/s]2024-10-31 18:11:50,961 - INFO - Using cached result for location: (49.83285979999999, 18.173595)
-2024-10-31 18:11:51,010 - INFO - Using cached result for location: (49.9987767, 14.6588671)
-Processing orders:  56%|█████▌    | 618/1108 [00:28<00:21, 23.09it/s]2024-10-31 18:11:51,454 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  56%|█████▋    | 624/1108 [00:28<00:22, 21.98it/s]2024-10-31 18:11:51,696 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:51,697 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:51,739 - INFO - Using cached result for location: (49.1270327, 16.6141065)
-Processing orders:  57%|█████▋    | 636/1108 [00:28<00:18, 25.63it/s]2024-10-31 18:11:52,098 - INFO - Using cached result for location: (50.1282492, 14.416611)
-Processing orders:  59%|█████▊    | 649/1108 [00:29<00:22, 20.23it/s]2024-10-31 18:11:52,693 - INFO - Using cached result for location: (49.780735, 14.1719187)
-Processing orders:  59%|█████▉    | 656/1108 [00:29<00:21, 20.98it/s]2024-10-31 18:11:53,068 - INFO - Using cached result for location: (50.094833, 14.4547586)
-Processing orders:  60%|█████▉    | 662/1108 [00:30<00:21, 21.19it/s]2024-10-31 18:11:53,345 - INFO - Using cached result for location: (50.0346049, 15.2181971)
-Processing orders:  60%|██████    | 669/1108 [00:30<00:20, 21.67it/s]2024-10-31 18:11:53,577 - INFO - Using cached result for location: (50.2559944, 14.5132055)
-2024-10-31 18:11:53,578 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  62%|██████▏   | 685/1108 [00:31<00:18, 22.38it/s]2024-10-31 18:11:54,296 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:54,339 - INFO - Using cached result for location: (49.780735, 14.1719187)
-Processing orders:  62%|██████▏   | 690/1108 [00:31<00:15, 26.53it/s]2024-10-31 18:11:54,387 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:54,388 - INFO - Using cached result for location: (50.4135009, 14.9098219)
-Processing orders:  63%|██████▎   | 695/1108 [00:31<00:13, 30.58it/s]2024-10-31 18:11:54,545 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  64%|██████▎   | 705/1108 [00:31<00:17, 22.97it/s]2024-10-31 18:11:55,022 - INFO - Using cached result for location: (49.8678135, 14.4096052)
-Processing orders:  66%|██████▌   | 733/1108 [00:33<00:18, 19.87it/s]2024-10-31 18:11:56,407 - INFO - Using cached result for location: (49.8231618, 18.3793253)
-Processing orders:  66%|██████▋   | 736/1108 [00:33<00:17, 20.74it/s]2024-10-31 18:11:56,408 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  67%|██████▋   | 743/1108 [00:33<00:15, 23.72it/s]2024-10-31 18:11:56,660 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  67%|██████▋   | 747/1108 [00:33<00:14, 24.79it/s]2024-10-31 18:11:56,808 - INFO - Using cached result for location: (49.81341, 18.3363689)
-2024-10-31 18:11:56,862 - INFO - Using cached result for location: (49.472641, 17.1151008)
-2024-10-31 18:11:56,907 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  68%|██████▊   | 756/1108 [00:34<00:13, 26.82it/s]2024-10-31 18:11:57,100 - INFO - Using cached result for location: (49.8531863, 13.9812724)
-2024-10-31 18:11:57,176 - INFO - Using cached result for location: (50.0251205, 15.7582206)
-2024-10-31 18:11:57,177 - INFO - Using cached result for location: (49.7725372, 13.3659934)
-Processing orders:  69%|██████▉   | 762/1108 [00:34<00:11, 30.68it/s]2024-10-31 18:11:57,254 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:57,254 - INFO - Using cached result for location: (50.0478732, 14.4541259)
-Processing orders:  69%|██████▉   | 766/1108 [00:34<00:10, 32.19it/s]2024-10-31 18:11:57,361 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  69%|██████▉   | 770/1108 [00:34<00:10, 30.89it/s]2024-10-31 18:11:57,544 - INFO - Using cached result for location: (50.0082809, 14.4465073)
-Processing orders:  70%|██████▉   | 774/1108 [00:34<00:10, 31.57it/s]2024-10-31 18:11:57,624 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  71%|███████   | 788/1108 [00:35<00:13, 23.27it/s]2024-10-31 18:11:58,258 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  71%|███████▏  | 792/1108 [00:35<00:13, 23.39it/s]2024-10-31 18:11:58,469 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:58,473 - INFO - Using cached result for location: (50.03044999999999, 15.206516)
-Processing orders:  72%|███████▏  | 796/1108 [00:35<00:11, 26.05it/s]2024-10-31 18:11:58,678 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  72%|███████▏  | 799/1108 [00:35<00:12, 24.87it/s]2024-10-31 18:11:58,680 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  73%|███████▎  | 808/1108 [00:35<00:12, 23.31it/s]2024-10-31 18:11:59,173 - INFO - Using cached result for location: (49.84013179999999, 18.2649973)
-Processing orders:  74%|███████▎  | 815/1108 [00:36<00:12, 24.23it/s]2024-10-31 18:11:59,442 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:59,444 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:59,446 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:11:59,447 - INFO - Using cached result for location: (50.03044999999999, 15.206516)
-Processing orders:  75%|███████▍  | 828/1108 [00:36<00:12, 22.79it/s]2024-10-31 18:11:59,889 - INFO - Using cached result for location: (49.81341, 18.3363689)
-Processing orders:  75%|███████▌  | 832/1108 [00:36<00:10, 25.32it/s]2024-10-31 18:12:00,009 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:12:00,082 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  76%|███████▌  | 839/1108 [00:37<00:10, 24.85it/s]2024-10-31 18:12:00,356 - INFO - Using cached result for location: (49.9566001, 15.2810373)
-Processing orders:  76%|███████▋  | 845/1108 [00:37<00:12, 21.60it/s]2024-10-31 18:12:00,630 - INFO - Using cached result for location: (49.84013179999999, 18.2649973)
-2024-10-31 18:12:00,673 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  77%|███████▋  | 850/1108 [00:37<00:09, 26.24it/s]2024-10-31 18:12:00,715 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:12:00,718 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  77%|███████▋  | 855/1108 [00:37<00:09, 27.20it/s]2024-10-31 18:12:00,928 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  78%|███████▊  | 865/1108 [00:38<00:09, 24.78it/s]2024-10-31 18:12:01,304 - INFO - Using cached result for location: (50.066906, 14.4604936)
-Processing orders:  78%|███████▊  | 868/1108 [00:38<00:10, 23.03it/s]2024-10-31 18:12:01,573 - INFO - Using cached result for location: (50.095982, 14.347201)
-Processing orders:  79%|███████▊  | 871/1108 [00:38<00:09, 23.75it/s]2024-10-31 18:12:01,623 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  80%|███████▉  | 881/1108 [00:38<00:09, 22.89it/s]2024-10-31 18:12:02,154 - INFO - Using cached result for location: (49.22680099999999, 16.5302192)
-Processing orders:  80%|███████▉  | 884/1108 [00:39<00:10, 22.25it/s]2024-10-31 18:12:02,156 - INFO - Using cached result for location: (49.87488829999999, 14.3639381)
-2024-10-31 18:12:02,157 - INFO - Using cached result for location: (50.24185, 15.4915184)
-Processing orders:  80%|████████  | 891/1108 [00:39<00:08, 24.89it/s]2024-10-31 18:12:02,524 - INFO - Using cached result for location: (50.09563780000001, 14.3490746)
-Processing orders:  81%|████████  | 894/1108 [00:39<00:08, 24.64it/s]2024-10-31 18:12:02,594 - INFO - Using cached result for location: (48.9960538, 14.4947862)
-Processing orders:  82%|████████▏ | 906/1108 [00:40<00:09, 21.20it/s]2024-10-31 18:12:03,123 - INFO - Using cached result for location: (50.0191488, 14.4472107)
-Processing orders:  82%|████████▏ | 909/1108 [00:40<00:09, 22.11it/s]2024-10-31 18:12:03,365 - INFO - Using cached result for location: (50.0297957, 14.5021705)
-Processing orders:  82%|████████▏ | 912/1108 [00:40<00:08, 22.80it/s]2024-10-31 18:12:03,406 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:12:03,407 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  83%|████████▎ | 919/1108 [00:40<00:07, 24.41it/s]2024-10-31 18:12:03,625 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  84%|████████▍ | 930/1108 [00:41<00:11, 15.97it/s]2024-10-31 18:12:04,362 - INFO - Using cached result for location: (50.6264234, 15.6114137)
-2024-10-31 18:12:04,408 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  84%|████████▍ | 935/1108 [00:41<00:08, 20.11it/s]2024-10-31 18:12:04,643 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  85%|████████▍ | 938/1108 [00:41<00:07, 21.39it/s]2024-10-31 18:12:04,714 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  85%|████████▍ | 941/1108 [00:41<00:07, 21.19it/s]2024-10-31 18:12:04,790 - INFO - Using cached result for location: (48.9960538, 14.4947862)
-2024-10-31 18:12:04,872 - INFO - Using cached result for location: (50.0135742, 14.4578886)
-2024-10-31 18:12:04,874 - INFO - Using cached result for location: (50.0818103, 14.4300897)
-Processing orders:  86%|████████▌ | 953/1108 [00:42<00:06, 25.12it/s]2024-10-31 18:12:05,193 - INFO - Using cached result for location: (50.271145, 14.3283822)
-2024-10-31 18:12:05,234 - INFO - Using cached result for location: (50.0237407, 15.2105052)
-2024-10-31 18:12:05,289 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  87%|████████▋ | 959/1108 [00:42<00:04, 30.68it/s]2024-10-31 18:12:05,329 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  87%|████████▋ | 963/1108 [00:42<00:05, 26.95it/s]2024-10-31 18:12:05,591 - INFO - Using cached result for location: (50.1676584, 14.4519636)
-Processing orders:  87%|████████▋ | 966/1108 [00:42<00:05, 26.95it/s]2024-10-31 18:12:05,681 - INFO - Using cached result for location: (48.984539, 14.5113757)
-Processing orders:  87%|████████▋ | 969/1108 [00:42<00:05, 26.45it/s]2024-10-31 18:12:05,753 - INFO - Using cached result for location: (48.9960538, 14.4947862)
-Processing orders:  88%|████████▊ | 973/1108 [00:42<00:04, 28.71it/s]2024-10-31 18:12:05,868 - INFO - Using cached result for location: (50.4385084, 14.9298153)
-2024-10-31 18:12:05,909 - INFO - Using cached result for location: (50.1444172, 14.4503809)
-Processing orders:  88%|████████▊ | 978/1108 [00:42<00:04, 31.63it/s]2024-10-31 18:12:06,119 - INFO - Using cached result for location: (49.1654123, 16.7271469)
-Processing orders:  89%|████████▉ | 985/1108 [00:43<00:04, 26.08it/s]2024-10-31 18:12:06,360 - INFO - Using cached result for location: (50.03044999999999, 15.206516)
-Processing orders:  89%|████████▉ | 989/1108 [00:43<00:04, 26.04it/s]2024-10-31 18:12:06,471 - INFO - Using cached result for location: (49.84013179999999, 18.2649973)
-Processing orders:  90%|████████▉ | 992/1108 [00:43<00:04, 24.61it/s]2024-10-31 18:12:06,658 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-2024-10-31 18:12:06,708 - INFO - Using cached result for location: (50.0579494, 14.427059)
-Processing orders:  90%|█████████ | 1000/1108 [00:43<00:04, 26.10it/s]2024-10-31 18:12:06,888 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  91%|█████████ | 1004/1108 [00:43<00:03, 27.34it/s]2024-10-31 18:12:07,020 - INFO - Using cached result for location: (50.0811346, 14.5005668)
-Processing orders:  91%|█████████ | 1007/1108 [00:44<00:03, 26.64it/s]2024-10-31 18:12:07,141 - INFO - Using cached result for location: (50.0857244, 14.4321395)
-Processing orders:  91%|█████████▏| 1013/1108 [00:44<00:04, 22.28it/s]2024-10-31 18:12:07,501 - INFO - Using cached result for location: (50.0381739, 15.2035506)
-Processing orders:  92%|█████████▏| 1020/1108 [00:44<00:03, 22.89it/s]2024-10-31 18:12:07,784 - INFO - Using cached result for location: (50.0709703, 14.680906)
-Processing orders:  92%|█████████▏| 1023/1108 [00:44<00:03, 23.86it/s]2024-10-31 18:12:07,890 - INFO - Using cached result for location: (50.1291309, 14.386228)
-Processing orders:  93%|█████████▎| 1027/1108 [00:44<00:03, 26.37it/s]2024-10-31 18:12:08,070 - INFO - Using cached result for location: (49.8370379, 18.2591519)
-2024-10-31 18:12:08,071 - INFO - Using cached result for location: (50.0391472, 15.2136186)
-Processing orders:  93%|█████████▎| 1032/1108 [00:45<00:02, 29.15it/s]2024-10-31 18:12:08,119 - INFO - Using cached result for location: (49.3627928, 17.1289688)
-Processing orders:  94%|█████████▎| 1036/1108 [00:45<00:02, 30.40it/s]2024-10-31 18:12:08,430 - INFO - Using cached result for location: (50.120643, 14.5014055)
-Processing orders:  94%|█████████▍| 1040/1108 [00:45<00:02, 26.57it/s]2024-10-31 18:12:08,503 - INFO - Using cached result for location: (50.0563579, 14.381033)
-2024-10-31 18:12:08,505 - INFO - Using cached result for location: (49.0859302, 16.6044552)
-Processing orders:  95%|█████████▌| 1056/1108 [00:46<00:02, 21.54it/s]2024-10-31 18:12:09,216 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders:  97%|█████████▋| 1075/1108 [00:46<00:01, 21.11it/s]2024-10-31 18:12:10,096 - INFO - Using cached result for location: (50.4942295, 15.5165757)
-2024-10-31 18:12:10,141 - INFO - Using cached result for location: (49.9813676, 13.4884094)
-Processing orders:  98%|█████████▊| 1083/1108 [00:47<00:01, 24.37it/s]2024-10-31 18:12:10,381 - INFO - Using cached result for location: (50.4135009, 14.9098219)
-Processing orders:  98%|█████████▊| 1087/1108 [00:47<00:00, 25.84it/s]2024-10-31 18:12:10,512 - INFO - Using cached result for location: (49.1823328, 15.463852)
-Processing orders:  98%|█████████▊| 1091/1108 [00:47<00:00, 27.27it/s]2024-10-31 18:12:10,637 - INFO - Using cached result for location: (49.0859302, 16.6044552)
-2024-10-31 18:12:10,638 - INFO - Using cached result for location: (50.1076132, 14.3948735)
-Processing orders:  99%|█████████▉| 1099/1108 [00:47<00:00, 26.24it/s]2024-10-31 18:12:10,942 - INFO - Using cached result for location: (49.8370379, 18.2591519)
-Processing orders: 100%|█████████▉| 1103/1108 [00:47<00:00, 25.86it/s]2024-10-31 18:12:11,059 - INFO - Using cached result for location: (50.120643, 14.5014055)
-Processing orders: 100%|█████████▉| 1106/1108 [00:48<00:00, 24.40it/s]2024-10-31 18:12:11,202 - INFO - Using cached result for location: (48.984539, 14.5113757)
-2024-10-31 18:12:11,203 - INFO - Using cached result for location: (50.41013659999999, 14.9178997)
-Processing orders: 100%|██████████| 1108/1108 [00:48<00:00, 23.01it/s]
-2024-10-31 18:12:11,254 - INFO - Total number of distances calculated: 1108
-2024-10-31 18:12:11,255 - INFO - Number of unique distances calculated: 938
-2024-10-31 18:12:11,256 - INFO - Number of API calls made: 0
-2024-10-31 18:12:11,257 - INFO - Creating Haversine Distance sheet
-2024-10-31 18:12:17,798 - INFO - Creating Drivable Distance sheet
-2024-10-31 18:13:07,649 - INFO - Adding store counts to Coordinates sheet
-2024-10-31 18:13:07,659 - ERROR - Error processing geolocation data: Worksheet named 'Coordinates' not found
-
-
-
-
-
-
---------------------------------------------------------
---------------------------------------------------------
---------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
-----------------------------------------------------------------------------------------------------------------
---------------------------------------------------------
-
-import pandas as pd
-import numpy as np
-from geopy.geocoders import GoogleV3
-import pycountry
-import logging
-from tqdm import tqdm
-import json
-import unicodedata
-import re
-import time
-import os
-from typing import Tuple, Optional, Dict
-from datetime import datetime
-from pathlib import Path
 
 class GeoLocationMapper:
     """A class to handle geolocation mapping using Google Maps API."""
@@ -1124,282 +323,22 @@ class GeoLocationMapper:
         logging.info(f"Unique addresses in cache: {len(self.cache)}")
         logging.info(f"Total API calls made: {self.total_calls}")
 
+
 # Example usage:
-"""
-mapper = GeoLocationMapper(api_key='your_api_key_here')
+mapper = GeoLocationMapper(api_key=geocoding_api_key)
 mapper.map_geolocations(
-    input_file='testing_CZ_ORDER.csv',
-    output_file='testing_CZ_ORDER_geo.xlsx'
+    input_file='testing_DE_ORDER.csv',
+    output_file='testing_DE_ORDER_mapped.xlsx'
 )
-"""
 
 
-
-
-
-
-
-
-
-import pandas as pd
-import numpy as np
-from googlemaps import Client
-import logging
-from datetime import datetime
-from pathlib import Path
-from tqdm import tqdm
-import json
-from typing import Dict, List, Tuple, Optional
-import time
-from concurrent.futures import ThreadPoolExecutor
-
-class StoreDistanceMapper:
-    """Handles mapping of orders to stores with distance calculations."""
-    
-    def __init__(self, api_key: str, cache_file: str = 'distance_cache.json'):
-        """Initialize the mapper with API key and cache file."""
-        self.gmaps = Client(key=api_key)
-        self.cache_file = cache_file
-        self.distance_cache = self._load_cache()
-        self.api_calls = 0
-        self.cache_hits = 0
-        
-        # Configure logging
-        log_file = f'store_mapping_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(log_file),
-                logging.StreamHandler()
-            ]
-        )
-
-    def _load_cache(self) -> Dict:
-        """Load distance cache from file."""
-        try:
-            if Path(self.cache_file).exists():
-                with open(self.cache_file, 'r') as f:
-                    return json.load(f)
-            return {}
-        except Exception as e:
-            logging.error(f"Error loading cache: {e}")
-            return {}
-
-    def _save_cache(self) -> None:
-        """Save distance cache to file."""
-        try:
-            with open(self.cache_file, 'w') as f:
-                json.dump(self.distance_cache, f)
-        except Exception as e:
-            logging.error(f"Error saving cache: {e}")
-
-    @staticmethod
-    def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-        """Calculate haversine distance between two points."""
-        lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-        dlat, dlon = lat2 - lat1, lon2 - lon1
-        a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
-        return 6367 * 2 * np.arcsin(np.sqrt(a))
-
-    def get_drivable_distance(self, origin: Tuple[float, float], 
-                            destination: Tuple[float, float]) -> Optional[float]:
-        """Get drivable distance between two points with caching."""
-        cache_key = f"{origin}_{destination}"
-        
-        if cache_key in self.distance_cache:
-            self.cache_hits += 1
-            logging.debug(f"Cache hit for distance: {cache_key}")
-            return self.distance_cache[cache_key]
-        
-        try:
-            time.sleep(0.1)  # Rate limiting
-            self.api_calls += 1
-            result = self.gmaps.distance_matrix(
-                origins=[origin],
-                destinations=[destination],
-                mode='driving',
-                units='metric'
-            )
-            
-            if result['status'] == 'OK':
-                distance = result['rows'][0]['elements'][0]['distance']['value'] / 1000
-                self.distance_cache[cache_key] = distance
-                
-                # Periodic cache saving
-                if self.api_calls % 100 == 0:
-                    self._save_cache()
-                    
-                return distance
-            else:
-                logging.warning(f"API returned non-OK status: {result['status']}")
-                return None
-                
-        except Exception as e:
-            logging.error(f"Error calculating drivable distance: {e}")
-            return None
-
-    def process_orders(self, orders_df: pd.DataFrame, 
-                      stores_df: pd.DataFrame, output_file: str) -> None:
-        """Process orders and create output sheets."""
-        try:
-            # Initialize result DataFrames
-            closest_stores = []
-            stores_within_5km_linear = []
-            stores_within_5km_drivable = []
-            
-            # Process each order
-            for idx, order in tqdm(orders_df.iterrows(), total=len(orders_df), 
-                                 desc="Processing orders"):
-                if pd.isna(order['Latitude']) or pd.isna(order['Longitude']):
-                    continue
-                
-                order_location = (order['Latitude'], order['Longitude'])
-                
-                # Find closest store and stores within 5km
-                closest_store_info = self._find_closest_store(order, stores_df)
-                linear_stores = self._find_stores_within_linear(order, stores_df)
-                drivable_stores = self._get_drivable_stores(order, linear_stores)
-                
-                # Update results
-                closest_stores.append(self._format_closest_store_row(order, closest_store_info))
-                stores_within_5km_linear.extend(self._format_nearby_stores_rows(order, linear_stores, 'linear'))
-                stores_within_5km_drivable.extend(self._format_nearby_stores_rows(order, drivable_stores, 'drivable'))
-            
-            # Create output DataFrames
-            self._create_output_sheets(
-                closest_stores,
-                stores_within_5km_linear,
-                stores_within_5km_drivable,
-                output_file
-            )
-            
-            logging.info(f"Processing completed. API calls: {self.api_calls}, Cache hits: {self.cache_hits}")
-            self._save_cache()
-            
-        except Exception as e:
-            logging.error(f"Error in process_orders: {e}")
-            raise
-
-    def _find_closest_store(self, order: pd.Series, 
-                           stores_df: pd.DataFrame) -> Dict:
-        """Find the closest store using haversine distance first."""
-        min_distance = float('inf')
-        closest_store = None
-        
-        for _, store in stores_df.iterrows():
-            distance = self.haversine(
-                order['Latitude'], order['Longitude'],
-                store['latitude'], store['longitude']
-            )
-            if distance < min_distance:
-                min_distance = distance
-                closest_store = store
-        
-        # Get drivable distance for closest store
-        drivable_distance = self.get_drivable_distance(
-            (order['Latitude'], order['Longitude']),
-            (closest_store['latitude'], closest_store['longitude'])
-        )
-        
-        return {
-            'store': closest_store,
-            'linear_distance': min_distance,
-            'drivable_distance': drivable_distance
-        }
-
-    def _find_stores_within_linear(self, order: pd.Series, 
-                                 stores_df: pd.DataFrame) -> List[Dict]:
-        """Find all stores within 5km linear distance."""
-        nearby_stores = []
-        
-        for _, store in stores_df.iterrows():
-            distance = self.haversine(
-                order['Latitude'], order['Longitude'],
-                store['latitude'], store['longitude']
-            )
-            if distance <= 5:
-                nearby_stores.append({
-                    'store': store,
-                    'linear_distance': distance
-                })
-        
-        return nearby_stores
-
-    def _get_drivable_stores(self, order: pd.Series, 
-                            linear_stores: List[Dict]) -> List[Dict]:
-        """Get drivable distances for stores within linear range."""
-        drivable_stores = []
-        
-        for store_info in linear_stores:
-            drivable_distance = self.get_drivable_distance(
-                (order['Latitude'], order['Longitude']),
-                (store_info['store']['latitude'], store_info['store']['longitude'])
-            )
-            
-            if drivable_distance is not None and drivable_distance <= 5:
-                store_info['drivable_distance'] = drivable_distance
-                drivable_stores.append(store_info)
-        
-        return drivable_stores
-
-    def _create_output_sheets(self, closest_stores: List[Dict],
-                            linear_stores: List[Dict],
-                            drivable_stores: List[Dict],
-                            output_file: str) -> None:
-        """Create and save all output sheets."""
-        # Create DataFrames
-        closest_df = pd.DataFrame(closest_stores)
-        linear_df = pd.DataFrame(linear_stores)
-        drivable_df = pd.DataFrame(drivable_stores)
-        
-        # Save to Excel
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            closest_df.to_excel(writer, sheet_name='Coordinates', index=False)
-            linear_df.to_excel(writer, sheet_name='5km Stores Linear', index=False)
-            drivable_df.to_excel(writer, sheet_name='5km Stores Drivable', index=False)
-
-def main():
-    """Main execution function."""
-    try:
-        # Configuration
-        api_key = 'YOUR_API_KEY'
-        orders_file = 'testing_CZ_ORDER_geo.xlsx'
-        stores_file = 'CZ_POS_DATA_GUID.csv'
-        output_file = 'store_mapping_results.xlsx'
-        
-        # Load data
-        orders_df = pd.read_excel(orders_file)
-        stores_df = pd.read_csv(stores_file, delimiter=';', encoding='utf-8')
-        
-        # Initialize and run mapper
-        mapper = StoreDistanceMapper(api_key)
-        mapper.process_orders(orders_df, stores_df, output_file)
-        
-    except Exception as e:
-        logging.error(f"Error in main execution: {e}")
-        raise
-
-if __name__ == "__main__":
-    main()
-
-
-PK	guid	Country	displayname	description	TOWN	latitude	longitude	status	sapid	locationtype	locationtuse	locationtcategory	locationtsubcategory
-8.80E+12	c305fa8532194515bcbc75742f169ea0	CZ	IQOS partnerská prodejna ZNOJMO	IQOS Partnerská prodejna Znojmo	Znojmo	48.855912	16.04841	1		IQOSSTORE	STOREWITHWEB	RETAIL	BRAND
-8.80E+12	bc316d2eb86044448e8ea3553c77da4a	CZ	IQOS stánek ZLÍN	IQOS CRN Zlín Centro	Zlín Malenovice	49.204444	17.572279	1		IQOSCORNER	STOREWITHWEB	RETAIL	BRAND
-8.80E+12	569c741ef4684e2eadadffe674b0a42e	CZ	IQOS partnerská prodejna ZLÍN	IQOS Partnerská prodejna Zlín	Zlín	49.222171	17.662388	1		IQOSSTORE	STOREWITHWEB	RETAIL	BRAND
-8.80E+12	bed6a1bfff404d0d949414641202bc51	CZ	IQOS partnerská prodejna ZÁBŘEH	IQOS Trafika Zábřeh	Zábřeh	49.882522	16.875777	1		IQOSSTORE	STOREWITHWEB	RETAIL	BRAND
-
-
-
-DATE	COUNTRY	ORDER	CART CODE	ORDERCHANNEL	ORDERTYPE	PMIORDERSTATUS	BASE STORE	DELIVERY MODE	DELIVERY STATUS	CARRIER	SUBTOTAL	TOWN	POSTAL CODE	STREET NAME	STREET NUMBER	Latitude	Longitude
-05/09/2024 15:32	CZ	1024112303	1024105720	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Free Pick-up Point incl. VAT	DELIVERED	PACKE	590	Uničov	783 91	Šumperská 527, Top směnárna		49.776092	17.122054
-12/09/2024 13:45	CZ	1024707382	1023416116	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Pick-up Point incl. VAT	DELIVERED	PACKE	4800	Strakonice	386 01	Bezděkovská 30, Tlapka		49.258043	13.905277
-05/09/2024 15:44	CZ	1024113376	1024116143	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Free Pick-up Point incl. VAT	DELIVERED	PACKE	590	Praha	140 00	Na Pankráci 1727/86, home&you		50.051156	14.439094
-03/09/2024 19:55	CZ	1023964407	1023965119	WEBSITE	ZTA	COMPLETED	iqos-cz-B2C-web	Pick-up Point incl. VAT	DELIVERED	PACKE	6000	Praha	140 00	Na Pankráci 1727/86, home&you		50.051156	14.439094
-
-
-
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
+#### ----------------------------------------------------PART 2 PART 2 PART 2 PART 2 ---------------------------------------------------------------------- #####
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
+#### ------------------------------------------------------------------------------------------------------------------------------------------------------ #####
 
 
 import pandas as pd
@@ -1413,6 +352,7 @@ import json
 from typing import Dict, List, Tuple, Optional
 import time
 from concurrent.futures import ThreadPoolExecutor
+
 
 class StoreDistanceMapper:
     """Handles mapping of orders to stores with distance calculations."""
@@ -1511,8 +451,8 @@ class StoreDistanceMapper:
             'ORDERTYPE': order.get('ORDERTYPE', ''),
             'PMIORDERSTATUS': order.get('PMIORDERSTATUS', ''),
             'BASE STORE': order.get('BASE STORE', ''),
-            'DELIVERY MODE': order.get('DELIVERY MODE', ''),
-            'DELIVERY STATUS': order.get('DELIVERY STATUS', ''),
+            'DELIVERY MODE': order.get('Delivery Mode', ''),
+            'DELIVERY STATUS': order.get('Delivery Status', ''),
             'CARRIER': order.get('CARRIER', ''),
             'SUBTOTAL': order.get('SUBTOTAL', ''),
             'TOWN': order.get('TOWN', ''),
@@ -1692,14 +632,15 @@ class StoreDistanceMapper:
             logging.error(f"Error in process_orders: {e}")
             raise
 
+
 def main():
     """Main execution function."""
     try:
         # Configuration
-        api_key = 'YOUR_API_KEY'
-        orders_file = 'testing_CZ_ORDER_geo.xlsx'
-        stores_file = 'CZ_POS_DATA_GUID.csv'
-        output_file = 'store_mapping_results.xlsx'
+        api_key = geocoding_api_key
+        orders_file = 'DE_ORDER_DATA_geo.xlsx'
+        stores_file = 'DE_POS_DATA_GUID_brand.csv'
+        output_file = 'F_DE_distance_mapping_results.xlsx'
         
         # Load data
         orders_df = pd.read_excel(orders_file)
@@ -1715,3 +656,17 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+3. Introduction
+3.1. Assumptions
+3.2. Technical context
+3.3. Objective
+3.4. Impacted components
+4. Concept
+5. Integration
+5.1. Summary
+5.2. Perf. KPI section for 3rd party integration & Observability matrix
+5.3. Section 2
+5.4. Section 3
+6. APIs
