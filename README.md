@@ -1183,6 +1183,50 @@ def main():
     # Initialize and run analysis
     clustering = ComprehensiveClustering(scaled_features, feature_names, original_df)
     results = clustering.run_complete_analysis()
+
+
+
+
+
+
+
+	Please find below my key achievements for 2024, some of them are still a work in progress or expecting improvements down the road. 
+	However I believe the below sums up my contribution for the last year. 
+ 
+		· Develop Monitoring Reports & Improved Data Observability 
+				· One of the key deliverables for this past year of 2024 was the development of improvements of several key reports that are able to provide data in a quick and easy way to interested parties. These reports mainly focus on Order fulfilment but also on RCA analysis within the commerce pipeline. The current reporting basis is set up within DEEP AWS Sagemaker on a python framework. This is an deliverable still under progress and we will continue to focus and provide improvements throughout 2025 mainly on automating whenever possible. Main reports include: 
+			
+			
+			Order Monitoring Report	Partial Automated
+(AWS Deep)	Aims at tracking slow moving orders, not exported orders & order export performance	Live - Weekly, shared through email
+			DB Size Monitoring Report	Partial Automated (AWS Deep)	Aims at tracking database consumption through time & tables consumption breakdown	Live - Monthly, shared through email
+			I07 Order Status Monitoring Report	Automated (Kibana Dash)	Aims at tracking overall i07 order status updates and errors	Live - I07 - Order Status Update Dashboard 2 - Elastic
+			Manual Reorder - Order & Cart Monitoring	Automated (Kibana Dash)	Aims at tracking manual reorder order creation, carts conversion & /reorder api performance	Live - Manual Reorder - Order Creation & Cart Performance - Elastic
+			DCE2 - Global Revenue Report	Partial Automated	Aims at providing a self-service report aimed at tracking order creation and revenue in EUR with a breakdown by market, channel & order type. 	Partial Live (Access restricted)
+				(PowerBI)		DCE2 - Monthly Overview Dasboard - Power BI
+			Fraud Control Report	Manual	Provided to payment Fraud Team, to review and analyze Eligibility Controls	Live - Monthly, shared through email
+			DR Order Monitoring Report	Manual	Aims at doing pattern recognition and RCA analysis for the daily DR tickets raised. Goal is to provide CAPA recommendations to improve order fulfilment issues.	WIP - Format is aligned, needs to build up data backlog for analysis
+			Events Framework:	Automated
+(Kibana  Dash)	POC for Automated reports based on eventing framework aim at providing self-service reports on order data. Number of orders, revenue, location, channels, product, promotions etc.	WIP - Pending Events Framework deployment
+Order Monitoring Report - *Market* Specific - Updated Index - Elastic
+			Order Monitoring Report - Global Overview
+			Events Framework:	Automated
+(Kibana  Dash)	POC for Automated reports based on eventing framework, aims at providing self-service reports on order update data. Similar to i07 report, however taking as source Order Status Updates Events.	WIP Pending Events Framework deployment
+			Order Monitoring Report - Status Updates			Order Monitoring Report - Status Updates - Updated Index - Elastic
+			Events Framework:	Automated
+(Kibana  Dash)	POC for Automated reports based on eventing framework, aims at providing self-service report, merging both POC described above for a specific market, providing order information and status information within a single dashboard.	WIP Pending Events Framework deployment
+			Order Monitoring Report - US specific			Order Monitoring Report - US specific - Updated Index - Elastic
+			POC Reports	Partial Automated	Several other reports aimed at providing business analytics for key shareholders. (GeoLocation Report, Order-Store Distance Report, etc)	POC for future development, pending business initiative pick-up for effort estimation.
+				(AWS Deep)
+			
+![Uploading image.png…]()
+
+
+
+
+
+
+    
     
     return clustering, results
 
