@@ -1,88 +1,85 @@
-Imagine you now have these three files:
+import json
+import os
+import hashlib
+import shutil
+from datetime import datetime
+import logging
 
-api_documentation.json
-physical_data_model.json
-reference_data.json
+# Configure logging
+logging.basicConfig(
+    filename='data_artifact.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
-You want to write some code that contains a parser that is able to load all of these 3 files and output a final merged json file called data_artifacts.json
+# Constants
+SOURCE_FILES = ["api_documentation.json", "physical_data_model.json", "reference_data.json"]
+MERGED_FILE = "data_artifacts.json"
+VERSION_HISTORY_DIR = "version_history/"
 
-And I would like to allow some for of monitoring or versioning history on another files as well that would be able to track any changes on these data models as well. Not sure what would be the best way to organize this though. 
+# Ensure version history directory exists
+os.makedirs(VERSION_HISTORY_DIR, exist_ok=True)
 
-Please notice that we are working on a python framework and all files are in the local directory. Please note that the code written must contain some basic logging capabilities
+def load_json(file_path):
+    """Load JSON data from a file."""
+    try:
+        with open(file_path, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Failed to load {file_path}: {e}")
+        return {}
 
+def save_json(file_path, data):
+    """Save JSON data to a file."""
+    try:
+        with open(file_path, 'w') as f:
+            json.dump(data, f, indent=4)
+        logging.info(f"File saved: {file_path}")
+    except Exception as e:
+        logging.error(f"Failed to save {file_path}: {e}")
 
-{
-  "physical_data_model": {
-    "tables": {
-      "db_customers": {
-        "description": "Stores customer information and delivery addresses",
-        "columns": {
-          "customer_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"], "description": "Unique identifier for customer"},
-          "email": {"type": "VARCHAR(255)", "is_nullable": false, "description": "Customer email address"},
-          "created_at": {"type": "TIMESTAMP", "is_nullable": false},
-          "updated_at": {"type": "TIMESTAMP", "is_nullable": false}
-        }
-      },
-      "db_customer_addresses": {
-        "description": "Stores customer delivery addresses",
-        "columns": {
-          "address_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"], "description": "Unique identifier for address"},
-          "customer_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"], "description": "Reference to customers table"},
-          "address_line1": {"type": "VARCHAR(100)", "is_nullable": false},
-          "address_line2": {"type": "VARCHAR(100)", "is_nullable": true},
-          "city": {"type": "VARCHAR(50)", "is_nullable": false},
-          "postal_code": {"type": "VARCHAR(10)", "is_nullable": false},
-          "country": {"type": "VARCHAR(2)", "is_nullable": false, "description": "ISO country code"},
-          "is_default": {"type": "BOOLEAN", "is_nullable": false, "default": false}
-        }
-      },
-      "db_orders": {
-        "description": "Stores order information",
-        "columns": {
-          "order_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"], "description": "Unique identifier for order"},
-          "customer_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"], "description": "Reference to customers table"},
-          "delivery_address_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"], "description": "Reference to customer_addresses table"},
-          "order_status": {"type": "VARCHAR(20)", "is_nullable": false, "description": "Current order status"},
-          "total_amount": {"type": "DECIMAL(10,2)", "is_nullable": false},
-          "payment_method": {"type": "VARCHAR(20)", "is_nullable": false, "description": "Payment method used for the order"},
-          "created_at": {"type": "TIMESTAMP", "is_nullable": false},
-          "updated_at": {"type": "TIMESTAMP", "is_nullable": false}
-        }
-      },
-      "db_shipments": {
-        "description": "Stores shipment tracking information",
-        "columns": {
-          "shipment_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"]},
-          "order_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"]},
-          "lsp_provider": {"type": "VARCHAR(20)", "is_nullable": false},
-          "tracking_number": {"type": "VARCHAR(100)", "is_nullable": true},
-          "shipment_status": {"type": "VARCHAR(20)", "is_nullable": false},
-          "shipping_method": {"type": "VARCHAR(20)", "is_nullable": false, "description": "Shipping method used for the shipment"},
-          "estimated_delivery": {"type": "TIMESTAMP", "is_nullable": true},
-          "created_at": {"type": "TIMESTAMP", "is_nullable": false},
-          "updated_at": {"type": "TIMESTAMP", "is_nullable": false}
-        }
-      },
-      "db_products": {
-        "description": "Stores product information",
-        "columns": {
-          "product_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"], "description": "Unique identifier for product"},
-          "product_name": {"type": "VARCHAR(255)", "is_nullable": false, "description": "Name of the product"},
-          "price": {"type": "DECIMAL(10,2)", "is_nullable": false, "description": "Price of the product"},
-          "product_category": {"type": "VARCHAR(50)", "is_nullable": false, "description": "Category of the product"},
-          "created_at": {"type": "TIMESTAMP", "is_nullable": false, "description": "Record creation timestamp"}
-        }
-      },
-      "db_order_items": {
-        "description": "Stores order items information",
-        "columns": {
-          "order_item_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["PRIMARY KEY"], "description": "Unique identifier for order item"},
-          "order_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"], "description": "Reference to orders table"},
-          "product_id": {"type": "BIGINT", "is_nullable": false, "constraints": ["FOREIGN KEY"], "description": "Reference to products table"},
-          "quantity": {"type": "INTEGER", "is_nullable": false, "description": "Quantity of the product ordered"},
-          "price": {"type": "DECIMAL(10,2)", "is_nullable": false, "description": "Price of the product at the time of order"}
-        }
-      }
-    }
-  }
-}
+def calculate_checksum(file_path):
+    """Calculate a file's checksum."""
+    hasher = hashlib.md5()
+    try:
+        with open(file_path, 'rb') as f:
+            buf = f.read()
+            hasher.update(buf)
+        return hasher.hexdigest()
+    except Exception as e:
+        logging.error(f"Failed to calculate checksum for {file_path}: {e}")
+        return None
+
+def backup_current_version():
+    """Backup the current data_artifacts.json file to version history."""
+    if os.path.exists(MERGED_FILE):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(VERSION_HISTORY_DIR, f"data_artifacts_{timestamp}.json")
+        try:
+            shutil.copy(MERGED_FILE, backup_path)
+            logging.info(f"Version backed up: {backup_path}")
+        except Exception as e:
+            logging.error(f"Failed to backup version: {e}")
+
+def merge_files():
+    """Merge the source JSON files into a single file."""
+    merged_data = {}
+    for file_name in SOURCE_FILES:
+        data = load_json(file_name)
+        if data:
+            merged_data.update(data)
+
+    # Save the merged file and create a backup if changes are detected
+    current_checksum = calculate_checksum(MERGED_FILE)
+    new_data_json = json.dumps(merged_data, sort_keys=True)
+    new_checksum = hashlib.md5(new_data_json.encode()).hexdigest()
+
+    if current_checksum != new_checksum:
+        backup_current_version()
+        save_json(MERGED_FILE, merged_data)
+        logging.info("Merged data updated and saved.")
+    else:
+        logging.info("No changes detected in source files.")
+
+if __name__ == "__main__":
+    merge_files()
