@@ -224,3 +224,292 @@ class DIAAnalyzer:
 **Output Tokens:** {response['output_tokens']}
 """
         return formatted_response
+
+
+
+
+________________________________________________________________________________________________________________________________________________________________________
+
+
+
+
+
+
+// model_config_claude_haiku.json
+{
+  "model": {
+    "id": "anthropic.claude-3-haiku-20240307-v1:0",
+    "max_tokens": 2048,
+    "temperature": 0.1,
+    "top_p": 0.9,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0
+  },
+  "retry_config": {
+    "max_retries": 3,
+    "initial_delay": 1,
+    "max_delay": 10,
+    "exponential_backoff": true
+  },
+  "output_format": {
+    "response_format": "json",
+    "include_source_references": true,
+    "include_confidence_scores": true
+  },
+  "logging": {
+    "level": "INFO",
+    "include_prompts": true,
+    "include_responses": true,
+    "log_format": "json"
+  }
+}
+
+// persona_config.json
+{
+    "content": {
+        "role_definition": "You are Data-Genie, a Senior Data Architect specialized in E-commerce data environments. Your expertise covers physical data modeling, data quality management, reference data governance, and API integration patterns.",
+        "context": "You operate within an E-commerce ecosystem focusing on creating comprehensive Data Impact Assessments for new IT features.",
+        "primary_responsibility": "Generate detailed Data Impact Assessments that analyze and document potential changes to the data environment.",
+        "analysis_approach": "Provide structured, systematic analysis breaking down impacts by specific data domains and components."
+    },
+    "objectives": {
+        "primary": [
+            {
+                "id": "DIA_CREATION",
+                "name": "Create Data Impact Assessments",
+                "description": "Generate comprehensive DIAs for new features",
+                "deliverables": [
+                    "Impact summary",
+                    "Detailed analysis by domain",
+                    "Risk assessment",
+                    "Implementation recommendations"
+                ]
+            },
+            {
+                "id": "PDM_ANALYSIS",
+                "name": "Analyze Physical Data Model Impact",
+                "description": "Evaluate changes needed in database schemas",
+                "focus_areas": [
+                    "Table structures",
+                    "Relationships",
+                    "Indexes",
+                    "Constraints"
+                ]
+            },
+            {
+                "id": "DQ_RULES",
+                "name": "Evaluate Data Quality Impact & Rules",
+                "description": "Assess impact on data quality rules and controls",
+                "components": [
+                    "Validation rules",
+                    "Monitoring requirements",
+                    "Quality metrics",
+                    "Cleansing procedures"
+                ]
+            },
+            {
+                "id": "REF_DATA",
+                "name": "Assess Reference Data Impact",
+                "description": "Analyze changes needed in reference data",
+                "aspects": [
+                    "Code tables",
+                    "Lookup data",
+                    "Classifications",
+                    "Hierarchies"
+                ]
+            },
+            {
+                "id": "INTEGRATION",
+                "name": "Review Data Integration Flows & API's",
+                "description": "Evaluate impact on data movement and interfaces",
+                "considerations": [
+                    "API contracts",
+                    "Data flow patterns",
+                    "Integration points",
+                    "Payload structures"
+                ]
+            }
+        ],
+        "constraints": [
+            "Must maintain data consistency",
+            "Ensure backward compatibility",
+            "Follow data governance standards",
+            "Preserve data lineage"
+        ]
+    },
+    "metadata": {
+        "version": "1.2",
+        "last_updated": "2025-01-14",
+        "author": "Data Team",
+        "role": "Senior Data Architect",
+        "domain": "E-commerce",
+        "review_cycle": "Quarterly"
+    },
+    "output_preferences": {
+        "format": "structured",
+        "detail_level": "comprehensive",
+        "include_diagrams": true,
+        "highlight_critical_impacts": true
+    }
+}
+
+
+import boto3
+import json
+import logging
+from typing import Dict, List, Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+
+class DIAAnalyzer:
+    def __init__(self, persona_path: str, model_config_path: str):
+        """Initialize the DIA Analyzer with persona and model configurations."""
+        logger.debug("Initializing AWS Bedrock client")
+        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        # Load configurations
+        self.model_config = self._load_json_file(model_config_path)
+        self.model_id = self.model_config['model']['id']
+        
+        # Load and structure persona config
+        self.persona_config = self._load_json_file(persona_path)
+        self.active_objectives = self.persona_config['objectives']['primary']
+        
+        # Initialize context
+        self.context = None
+
+    def _load_json_file(self, file_path: str) -> Dict:
+        """Load and parse a JSON file."""
+        try:
+            with open(file_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+            raise
+
+    def set_active_objectives(self, objective_ids: List[str]) -> None:
+        """Set specific objectives to focus on."""
+        all_objectives = {obj['id']: obj for obj in self.persona_config['objectives']['primary']}
+        self.active_objectives = [
+            all_objectives[obj_id] for obj_id in objective_ids
+            if obj_id in all_objectives
+        ]
+        logger.info(f"Set active objectives: {[obj['name'] for obj in self.active_objectives]}")
+
+    def load_context(self, context: Dict) -> None:
+        """Load the analysis context directly."""
+        self.context = context
+        logger.debug("Context loaded successfully")
+
+    def _create_prompt(self, prompt: str) -> str:
+        """Create the analysis prompt with current context and objectives."""
+        # Format objectives for clear instruction
+        objectives_text = "\nFocus on the following objectives:\n"
+        for obj in self.active_objectives:
+            objectives_text += f"\n{obj['name']}: {obj['description']}"
+            if 'components' in obj:
+                objectives_text += "\nKey components to consider:"
+                for component in obj['components']:
+                    objectives_text += f"\n- {component}"
+
+        # Add constraints if available
+        constraints_text = ""
+        if 'constraints' in self.persona_config['objectives']:
+            constraints_text = "\n\nAnalysis Constraints:\n" + \
+                             "\n".join(f"- {c}" for c in self.persona_config['objectives']['constraints'])
+
+        full_prompt = f"""
+{self.persona_config['content']['role_definition']}
+
+{objectives_text}
+{constraints_text}
+
+Document Content:
+{json.dumps(self.context, indent=2)}
+
+Analysis Request:
+{prompt}
+"""
+        return full_prompt
+
+    def analyze_prompt(self, prompt: str) -> Dict:
+        """Analyze the context with given prompt and return structured response."""
+        full_prompt = self._create_prompt(prompt)
+        
+        try:
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps({
+                    "messages": [{"role": "user", "content": full_prompt}],
+                    "max_tokens": self.model_config['model']['max_tokens'],
+                    "temperature": self.model_config['model']['temperature'],
+                    "top_p": self.model_config['model']['top_p'],
+                    "anthropic_version": 'bedrock-2023-05-31'
+                })
+            )
+            
+            model_response = json.loads(response['body'].read())
+            return {
+                "content": model_response['content'][0]['text'],
+                "metadata": {
+                    "input_tokens": model_response['usage']['input_tokens'],
+                    "output_tokens": model_response['usage']['output_tokens'],
+                    "active_objectives": [obj['id'] for obj in self.active_objectives]
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_prompt: {e}")
+            raise
+
+
+# Initialize the analyzer
+analyzer = DIAAnalyzer('persona_config.json', 'model_config_claude_haiku.json')
+
+# Load your AD document
+with open('input_ad_data.json', 'r') as f:
+    ad_content = json.load(f)
+
+# Example 1: Focus on PDM Analysis only
+analyzer.set_active_objectives(['PDM_ANALYSIS'])
+analyzer.load_context(ad_content)
+pdm_result = analyzer.analyze_prompt(
+    "Analyze the physical data model changes required for this implementation. "
+    "Include impact on existing tables and new table requirements."
+)
+
+# Example 2: Focus on Integration and Reference Data
+analyzer.set_active_objectives(['INTEGRATION', 'REF_DATA'])
+analyzer.load_context(ad_content)
+integration_result = analyzer.analyze_prompt(
+    "Analyze the API changes and reference data impacts. "
+    "Focus on new API endpoints and required reference data updates."
+)
+
+# Example 3: Comprehensive Analysis
+analyzer.set_active_objectives(['DIA_CREATION', 'PDM_ANALYSIS', 'DQ_RULES', 'REF_DATA', 'INTEGRATION'])
+analyzer.load_context(ad_content)
+full_result = analyzer.analyze_prompt(
+    "Provide a comprehensive data impact assessment for the same-day delivery implementation."
+)
+
+# Example 4: Data Quality Focus
+analyzer.set_active_objectives(['DQ_RULES'])
+analyzer.load_context(ad_content)
+dq_result = analyzer.analyze_prompt(
+    "Analyze the data quality implications of this implementation. "
+    "Focus on required validation rules and quality controls."
+)
+
+# Example 5: PDM and Integration Combined Analysis
+analyzer.set_active_objectives(['PDM_ANALYSIS', 'INTEGRATION'])
+analyzer.load_context(ad_content)
+pdm_api_result = analyzer.analyze_prompt(
+    "Analyze how the new API endpoints will interact with the proposed database changes. "
+    "Include any potential performance or consistency considerations."
+)
