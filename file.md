@@ -1,3 +1,33 @@
+model_config_claude_haiku.json:
+{
+  "model": {
+    "id": "anthropic.claude-3-haiku-20240307-v1:0",
+    "max_tokens": 2048,
+    "temperature": 0.1,
+    "top_p": 0.9
+  }
+}
+
+
+persona_config.json:
+{
+    "content": "You are Data-Genie, a Senior Data Architect. Your main objective is to create Data Impact Assessments for new IT features being built on an E-commerce environment. Focus on Physical Data Model Impact, Data Quality Housekeeping Rules, Reference Data Impact, and Data Integration Flows across different components. Please provide detailed and accurate responses breaking down each object. Your specific objectives include: Create Data Impact Assessments, Analyze Physical Data Model Impact, Evaluate Data Quality Impact & Rules, Assess Reference Data Impact, Review Data Integration Flows & API's.",
+    "metadata": {
+        "version": "1.1",
+        "last_updated": "2025-01-06",
+        "author": "Data Team",
+        "role": "Senior Data Architect",
+        "objectives": [
+            "Create Data Impact Assessments",
+            "Analyze Physical Data Model Impact",
+            "Evaluate Data Quality Housekeeping Rules",
+            "Assess Reference Data Impact",
+            "Review Data Integration Flows & API's"
+        ]
+    }
+}
+
+input_ad_data.json: 
 {
   "metadata": {
     "title": "Same-Day Delivery Service Implementation",
@@ -53,3 +83,144 @@
     }
   }
 }
+
+data_artifacts.json: 
+{"apis":{"Order Management API":{"version":"1.0.0","base_path":"/api/v1","endpoints":{"/orders":{"method":"POST","description":"Create new order","request_schema":{"type":"object","properties":{"customer_id":{"type":"string","description":"Unique identifier of the customer"},"delivery_address_id":{"type":"string","description":"ID of the delivery address"},"shipping_method":{"type":"string","enum":["STANDARD","EXPRESS"],"description":"Selected shipping method"},"items":{"type":"array","items":{"type":"object","properties":{"product_id":{"type":"string"},"quantity":{"type":"integer"}}}}}},"response_schema":{"type":"object","properties":{"order_id":{"type":"string"},"estimated_delivery":{"type":"string","format":"date-time"},"shipping_fee":{"type":"number"},"total_amount":{"type":"number"}}}}}}},"physical_data_model":{"tables":{"db_customers":{"description":"Stores customer information and delivery addresses","columns":{"customer_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"],"description":"Unique identifier for customer"},"email":{"type":"VARCHAR(255)","is_nullable":false,"description":"Customer email address"},"created_at":{"type":"TIMESTAMP","is_nullable":false},"updated_at":{"type":"TIMESTAMP","is_nullable":false}}},"db_customer_addresses":{"description":"Stores customer delivery addresses","columns":{"address_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"],"description":"Unique identifier for address"},"customer_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"],"description":"Reference to customers table"},"address_line1":{"type":"VARCHAR(100)","is_nullable":false},"address_line2":{"type":"VARCHAR(100)","is_nullable":true},"city":{"type":"VARCHAR(50)","is_nullable":false},"postal_code":{"type":"VARCHAR(10)","is_nullable":false},"country":{"type":"VARCHAR(2)","is_nullable":false,"description":"ISO country code"},"is_default":{"type":"BOOLEAN","is_nullable":false,"default":false}}},"db_orders":{"description":"Stores order information","columns":{"order_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"],"description":"Unique identifier for order"},"customer_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"],"description":"Reference to customers table"},"delivery_address_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"],"description":"Reference to customer_addresses table"},"order_status":{"type":"VARCHAR(20)","is_nullable":false,"description":"Current order status"},"total_amount":{"type":"DECIMAL(10,2)","is_nullable":false},"payment_method":{"type":"VARCHAR(20)","is_nullable":false,"description":"Payment method used for the order"},"created_at":{"type":"TIMESTAMP","is_nullable":false},"updated_at":{"type":"TIMESTAMP","is_nullable":false}}},"db_shipments":{"description":"Stores shipment tracking information","columns":{"shipment_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"]},"order_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"]},"lsp_provider":{"type":"VARCHAR(20)","is_nullable":false},"tracking_number":{"type":"VARCHAR(100)","is_nullable":true},"shipment_status":{"type":"VARCHAR(20)","is_nullable":false},"shipping_method":{"type":"VARCHAR(20)","is_nullable":false,"description":"Shipping method used for the shipment"},"estimated_delivery":{"type":"TIMESTAMP","is_nullable":true},"created_at":{"type":"TIMESTAMP","is_nullable":false},"updated_at":{"type":"TIMESTAMP","is_nullable":false}}},"db_products":{"description":"Stores product information","columns":{"product_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"],"description":"Unique identifier for product"},"product_name":{"type":"VARCHAR(255)","is_nullable":false,"description":"Name of the product"},"price":{"type":"DECIMAL(10,2)","is_nullable":false,"description":"Price of the product"},"product_category":{"type":"VARCHAR(50)","is_nullable":false,"description":"Category of the product"},"created_at":{"type":"TIMESTAMP","is_nullable":false,"description":"Record creation timestamp"}}},"db_order_items":{"description":"Stores order items information","columns":{"order_item_id":{"type":"BIGINT","is_nullable":false,"constraints":["PRIMARY KEY"],"description":"Unique identifier for order item"},"order_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"],"description":"Reference to orders table"},"product_id":{"type":"BIGINT","is_nullable":false,"constraints":["FOREIGN KEY"],"description":"Reference to products table"},"quantity":{"type":"INTEGER","is_nullable":false,"description":"Quantity of the product ordered"},"price":{"type":"DECIMAL(10,2)","is_nullable":false,"description":"Price of the product at the time of order"}}}}},"reference_data":{"domains":{"rd_order_statuses":{"description":"Valid order status values","values":{"CREATED":{"description":"Order has been created","is_active":true,"sort_order":1},"PAYMENT_PENDING":{"description":"Awaiting payment confirmation","is_active":true,"sort_order":2},"PROCESSING":{"description":"Order is being processed","is_active":true,"sort_order":3},"SHIPPED":{"description":"Order has been shipped","is_active":true,"sort_order":4},"DELIVERED":{"description":"Order has been delivered","is_active":true,"sort_order":5},"CANCELLED":{"description":"Order has been cancelled","is_active":true,"sort_order":6},"Undelivered":{"description":"Order has been undelivered","is_active":true,"sort_order":7}}},"rd_shipment_statuses":{"description":"Valid shipment status values","values":{"PENDING":{"description":"Shipment created but not picked up","is_active":true,"sort_order":1},"IN_TRANSIT":{"description":"Shipment is in transit","is_active":true,"sort_order":2},"DELIVERED":{"description":"Shipment has been delivered","is_active":true,"sort_order":3},"FAILED":{"description":"Delivery attempt failed","is_active":true,"sort_order":4}}},"rd_shipping_methods":{"description":"Available shipping methods","values":{"STANDARD":{"description":"Standard shipping (3-5 business days)","base_fee":5.99,"is_active":true},"EXPRESS":{"description":"Express shipping (1-2 business days)","base_fee":12.99,"is_active":true}}},"rd_product_categories":{"description":"Valid product categories","values":{"CONSUMABLES":{"description":"Consumables - Heets and Terea","is_active":true,"sort_order":1},"DEVICES":{"description":"Devices and Kits","is_active":true,"sort_order":2},"BUNDLES":{"description":"Bundles - combination of device and consumables","is_active":true,"sort_order":3}}},"rd_payment_methods":{"description":"Available payment methods","values":{"CREDIT_CARD":{"description":"Credit card payment","is_active":true,"sort_order":1},"BANK_TRANSFER":{"description":"Bank transfer payment","is_active":true,"sort_order":2},"CASH_ON_DELIVERY":{"description":"Cash on delivery","is_active":true,"sort_order":3}}}}},"metadata":{"version":"v2","last_updated":"2025-01-14T18:42:18.919392","source_checksums":{"api_documentation.json":"467c7b22197dee1c5da44bcb3269f29c","physical_data_model.json":"7b8b04f2976616ea012d5fa1e42c8001","reference_data.json":"0d70626a330b6a7de391029656191f3c"}}}
+
+
+model_initiation_claude.ipynb:
+import boto3
+import json
+import logging
+from typing import Dict
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)  # Set the default logging level to INFO
+logger = logging.getLogger(__name__)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+
+class DIAAnalyzer:
+    def __init__(self, persona_path: str, model_config_path: str):
+        # Initialize AWS clients with region specification
+        logger.debug("Initializing AWS Bedrock client")
+        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        # Load configurations
+        logger.debug(f"Loading model configuration from {model_config_path}")
+        self.model_config = self._load_model_config(model_config_path)
+        self.model_id = self.model_config['model']['id']
+        
+        # Load persona instructions
+        logger.debug(f"Loading persona instructions from {persona_path}")
+        self.persona, self.objectives = self._load_persona(persona_path)
+        
+        # Initialize context as None
+        self.context = None
+
+    def _load_model_config(self, model_config_path: str) -> Dict:
+        """Load model configuration."""
+        logger.debug(f"Reading model configuration file: {model_config_path}")
+        with open(model_config_path, 'r') as f:
+            config = json.load(f)
+        logger.debug(f"Model configuration loaded: {config}")
+        return config
+
+    def _load_persona(self, persona_path: str) -> (str, list):
+        """Load the Data Architect persona instructions from a JSON file."""
+        logger.debug(f"Reading persona configuration file: {persona_path}")
+        with open(persona_path, 'r') as f:
+            persona_config = json.load(f)
+        logger.debug(f"Persona instructions loaded: {persona_config['content']}")
+        return persona_config['content'], persona_config['metadata']['objectives']
+
+    def load_context(self, context_path: str) -> None:
+        """Load context from a JSON file."""
+        try:
+            logger.debug(f"Loading context from {context_path}")
+            with open(context_path, 'r') as f:
+                self.context = json.load(f)
+            logger.debug("Context loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading context: {e}")
+            raise
+
+    def _create_prompt(self, prompt: str) -> str:
+        """Create the full prompt combining persona and user prompt."""
+        objectives_text = "Your specific objectives include: " + ", ".join(self.objectives) + "."
+        
+        # Add context if available
+        context_text = ""
+        if self.context:
+            context_text = f"\nAvailable Context:\n{json.dumps(self.context, indent=2)}"
+        
+        full_prompt = f"""
+        {self.persona}
+        {objectives_text}
+    
+        Please analyze the following prompt and provide a detailed response:
+        {prompt}
+        {context_text}
+        """
+        logger.debug(f"Full prompt created: {full_prompt}")
+        return full_prompt
+
+    def analyze_prompt(self, prompt: str) -> Dict:
+        """Main method to analyze a prompt and generate a response."""
+        # Create full prompt
+        full_prompt = self._create_prompt(prompt)
+        
+        # Call Bedrock model
+        try:
+            logger.debug("Invoking Bedrock model")
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps({
+                    "messages": [
+                        {"role": "user", "content": full_prompt}
+                    ],
+                    "max_tokens": self.model_config['model']['max_tokens'],
+                    "temperature": self.model_config['model']['temperature'],
+                    "top_p": self.model_config['model']['top_p'],
+                    "anthropic_version": 'bedrock-2023-05-31'
+                })
+            )
+            logger.debug("Model invoked successfully")
+        except Exception as e:
+            logger.error(f"Error invoking model: {e}")
+            raise
+        
+        # Parse and return the response
+        try:
+            logger.debug("Parsing model response")
+            model_response = json.loads(response['body'].read())
+            logger.debug(f"Model response parsed successfully")
+            return self._extract_valuable_info(model_response)
+        except Exception as e:
+            logger.error(f"Error parsing model response: {e}")
+            raise
+
+    def _extract_valuable_info(self, model_response: Dict) -> Dict:
+        """Extract the valuable information from the model response."""
+        content_text = model_response['content'][0]['text']
+        input_tokens = model_response['usage']['input_tokens']
+        output_tokens = model_response['usage']['output_tokens']
+        
+        return {
+            "content_text": content_text,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens
+        }
+
+    def _format_response(self, response: Dict) -> str:
+        """Format the response in Markdown."""
+        formatted_response = f"""
+## Data Impact Assessment Output Example:
+
+{response['content_text']}
+
+**Input Tokens:** {response['input_tokens']}  
+**Output Tokens:** {response['output_tokens']}
+"""
+        return formatted_response
