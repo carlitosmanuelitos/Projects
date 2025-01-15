@@ -354,6 +354,7 @@ ________________________________________________________________________________
 }
 
 
+
 import boto3
 import json
 import logging
@@ -438,7 +439,7 @@ Analysis Request:
     def analyze_prompt(self, prompt: str) -> Dict:
         """Analyze the context with given prompt and return structured response."""
         full_prompt = self._create_prompt(prompt)
-        
+
         try:
             response = self.bedrock.invoke_model(
                 modelId=self.model_id,
@@ -452,8 +453,15 @@ Analysis Request:
                     "anthropic_version": 'bedrock-2023-05-31'
                 })
             )
-            
-            model_response = json.loads(response['body'].read())
+
+            # Log the full response for debugging
+            logger.debug(f"Model response: {response}")
+
+            # Read and parse the response body
+            response_body = response['body'].read()
+            logger.debug(f"Response body: {response_body}")
+
+            model_response = json.loads(response_body)
             return {
                 "content": model_response['content'][0]['text'],
                 "metadata": {
@@ -462,17 +470,20 @@ Analysis Request:
                     "active_objectives": [obj['id'] for obj in self.active_objectives]
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Error in analyze_prompt: {e}")
             raise
 
 
+
+
+
 # Initialize the analyzer
-analyzer = DIAAnalyzer('persona_config.json', 'model_config_claude_haiku.json')
+analyzer = DIAAnalyzer('configs/persona_config_v2.json', 'configs/model_config_claude_haiku.json')
 
 # Load your AD document
-with open('input_ad_data.json', 'r') as f:
+with open('data_input/input_data_ad_ai.json', 'r') as f:
     ad_content = json.load(f)
 
 # Example 1: Focus on PDM Analysis only
@@ -483,33 +494,5 @@ pdm_result = analyzer.analyze_prompt(
     "Include impact on existing tables and new table requirements."
 )
 
-# Example 2: Focus on Integration and Reference Data
-analyzer.set_active_objectives(['INTEGRATION', 'REF_DATA'])
-analyzer.load_context(ad_content)
-integration_result = analyzer.analyze_prompt(
-    "Analyze the API changes and reference data impacts. "
-    "Focus on new API endpoints and required reference data updates."
-)
 
-# Example 3: Comprehensive Analysis
-analyzer.set_active_objectives(['DIA_CREATION', 'PDM_ANALYSIS', 'DQ_RULES', 'REF_DATA', 'INTEGRATION'])
-analyzer.load_context(ad_content)
-full_result = analyzer.analyze_prompt(
-    "Provide a comprehensive data impact assessment for the same-day delivery implementation."
-)
-
-# Example 4: Data Quality Focus
-analyzer.set_active_objectives(['DQ_RULES'])
-analyzer.load_context(ad_content)
-dq_result = analyzer.analyze_prompt(
-    "Analyze the data quality implications of this implementation. "
-    "Focus on required validation rules and quality controls."
-)
-
-# Example 5: PDM and Integration Combined Analysis
-analyzer.set_active_objectives(['PDM_ANALYSIS', 'INTEGRATION'])
-analyzer.load_context(ad_content)
-pdm_api_result = analyzer.analyze_prompt(
-    "Analyze how the new API endpoints will interact with the proposed database changes. "
-    "Include any potential performance or consistency considerations."
-)
+INFO:__main__:Set active objectives: ['Analyze Physical Data Model Impact']
