@@ -496,3 +496,186 @@ pdm_result = analyzer.analyze_prompt(
 
 
 INFO:__main__:Set active objectives: ['Analyze Physical Data Model Impact']
+
+
+
+
+import boto3
+import json
+import logging
+from typing import Dict, List, Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+
+class DIAAnalyzer:
+    def __init__(self, persona_path: str, model_config_path: str):
+        """Initialize the DIA Analyzer with persona and model configurations."""
+        logger.info("Initializing DIAAnalyzer")
+        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        # Load configurations
+        self.model_config = self._load_json_file(model_config_path)
+        self.model_id = self.model_config['model']['id']
+        
+        # Load and structure persona config
+        self.persona_config = self._load_json_file(persona_path)
+        self.active_objectives = self.persona_config['objectives']['primary']
+        
+        # Initialize context
+        self.context = None
+
+    def _load_json_file(self, file_path: str) -> Dict:
+        """Load and parse a JSON file."""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                logger.info(f"Successfully loaded configuration from {file_path}")
+                return data
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+            raise
+
+    def set_active_objectives(self, objective_ids: List[str]) -> None:
+        """Set specific objectives to focus on."""
+        all_objectives = {obj['id']: obj for obj in self.persona_config['objectives']['primary']}
+        self.active_objectives = []
+        
+        for obj_id in objective_ids:
+            if obj_id in all_objectives:
+                self.active_objectives.append(all_objectives[obj_id])
+                logger.info(f"Added objective: {all_objectives[obj_id]['name']}")
+            else:
+                logger.warning(f"Objective ID not found: {obj_id}")
+        
+        if not self.active_objectives:
+            logger.error("No valid objectives were set")
+            raise ValueError("No valid objectives were provided")
+
+    def load_context(self, context: Dict) -> None:
+        """Load the analysis context directly."""
+        if not context:
+            logger.error("Empty context provided")
+            raise ValueError("Context cannot be empty")
+            
+        self.context = context
+        logger.info("Context loaded successfully")
+
+    def _create_prompt(self, prompt: str) -> str:
+        """Create the analysis prompt with current context and objectives."""
+        if not self.active_objectives:
+            logger.error("No active objectives set")
+            raise ValueError("No active objectives have been set")
+            
+        if not self.context:
+            logger.error("No context loaded")
+            raise ValueError("No context has been loaded")
+
+        # Format objectives for clear instruction
+        objectives_text = "\nFocus on the following objectives:\n"
+        for obj in self.active_objectives:
+            objectives_text += f"\n{obj['name']}: {obj['description']}"
+            for key in ['components', 'focus_areas', 'deliverables', 'aspects', 'considerations']:
+                if key in obj:
+                    objectives_text += f"\nKey {key} to consider:"
+                    for item in obj[key]:
+                        objectives_text += f"\n- {item}"
+
+        # Add constraints
+        constraints_text = ""
+        if 'constraints' in self.persona_config['objectives']:
+            constraints_text = "\n\nAnalysis Constraints:\n" + \
+                             "\n".join(f"- {c}" for c in self.persona_config['objectives']['constraints'])
+
+        full_prompt = f"""
+{self.persona_config['content']['role_definition']}
+
+{objectives_text}
+{constraints_text}
+
+Document Content:
+{json.dumps(self.context, indent=2)}
+
+Analysis Request:
+{prompt}
+
+Please provide a structured analysis following the objectives and constraints outlined above.
+"""
+        logger.debug(f"Created prompt with length: {len(full_prompt)}")
+        return full_prompt
+
+    def analyze_prompt(self, prompt: str) -> Dict:
+        """Analyze the context with given prompt and return structured response."""
+        try:
+            full_prompt = self._create_prompt(prompt)
+            
+            request_body = {
+                "messages": [{"role": "user", "content": full_prompt}],
+                "max_tokens": self.model_config['model']['max_tokens'],
+                "temperature": self.model_config['model']['temperature'],
+                "top_p": self.model_config['model']['top_p'],
+                "anthropic_version": 'bedrock-2023-05-31'
+            }
+            
+            logger.info("Invoking Bedrock model")
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps(request_body)
+            )
+
+            response_body = json.loads(response['body'].read())
+            logger.info("Successfully received model response")
+
+            # Extract the relevant information from the response
+            if 'content' not in response_body or not response_body['content']:
+                raise ValueError("Invalid response format from model")
+
+            result = {
+                "content": response_body['content'][0]['text'],
+                "metadata": {
+                    "input_tokens": response_body['usage']['input_tokens'],
+                    "output_tokens": response_body['usage']['output_tokens'],
+                    "active_objectives": [obj['id'] for obj in self.active_objectives],
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+            }
+
+            logger.info(f"Analysis completed. Output tokens: {result['metadata']['output_tokens']}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in analyze_prompt: {e}")
+            raise
+
+# Example usage
+if __name__ == "__main__":
+    try:
+        # Initialize the analyzer
+        analyzer = DIAAnalyzer('configs/persona_config.json', 'configs/model_config_claude_haiku.json')
+        
+        # Load the input data
+        with open('data_input/input_data_ad_ai.json', 'r') as f:
+            ad_content = json.load(f)
+            logger.info("Successfully loaded input data")
+
+        # Set objectives and load context
+        analyzer.set_active_objectives(['PDM_ANALYSIS'])
+        analyzer.load_context(ad_content)
+
+        # Run analysis
+        result = analyzer.analyze_prompt(
+            "Analyze the physical data model changes required for this implementation. "
+            "Include impact on existing tables and new table requirements."
+        )
+
+        # Print or process the results
+        print("\nAnalysis Result:")
+        print(json.dumps(result, indent=2))
+
+    except Exception as e:
+        logger.error(f"Error in main execution: {e}")
+        raise
