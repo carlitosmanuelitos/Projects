@@ -129,6 +129,230 @@ data_artifacts.json:
 
 ________________________________________________________________________________________________________________________________________________________________________
 
+import boto3
+import json
+import logging
+import datetime
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+
+@dataclass
+class ModelMetrics:
+    """Class to store model execution metrics"""
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    execution_time: float
+    timestamp: str
+
+class PromptTracker:
+    """Class to track and store prompts"""
+    def __init__(self):
+        self.prompts = []
+        
+    def add_prompt(self, prompt: str, timestamp: str):
+        self.prompts.append({
+            "prompt": prompt,
+            "timestamp": timestamp
+        })
+    
+    def get_latest_prompt(self) -> Dict:
+        return self.prompts[-1] if self.prompts else None
+    
+    def get_all_prompts(self) -> List[Dict]:
+        return self.prompts
+
+class DIAAnalyzer:
+    def __init__(self, persona_path: str, model_config_path: str):
+        """Initialize the DIA Analyzer with persona and model configurations."""
+        logger.info("Initializing DIAAnalyzer")
+        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        # Load configurations
+        self.model_config = self._load_json_file(model_config_path)
+        self.model_id = self.model_config['model']['id']
+        
+        # Load and structure persona config
+        self.persona_config = self._load_json_file(persona_path)
+        self.active_objectives = self.persona_config['objectives']['primary']
+        
+        # Initialize tracking components
+        self.prompt_tracker = PromptTracker()
+        self.latest_metrics = None
+        self.context = None
+        
+        # Initialize Rich console for pretty printing
+        self.console = Console()
+
+    def _load_json_file(self, file_path: str) -> Dict:
+        """Load and parse a JSON file."""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                logger.info(f"Successfully loaded configuration from {file_path}")
+                return data
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+            raise
+
+    def set_active_objectives(self, objective_ids: List[str]) -> None:
+        """Set specific objectives to focus on."""
+        all_objectives = {obj['id']: obj for obj in self.persona_config['objectives']['primary']}
+        self.active_objectives = []
+        
+        for obj_id in objective_ids:
+            if obj_id in all_objectives:
+                self.active_objectives.append(all_objectives[obj_id])
+                logger.info(f"Added objective: {all_objectives[obj_id]['name']}")
+            else:
+                logger.warning(f"Objective ID not found: {obj_id}")
+        
+        if not self.active_objectives:
+            logger.error("No valid objectives were set")
+            raise ValueError("No valid objectives were provided")
+
+    def load_context(self, context: Dict) -> None:
+        """Load the analysis context directly."""
+        if not context:
+            logger.error("Empty context provided")
+            raise ValueError("Context cannot be empty")
+            
+        self.context = context
+        logger.info("Context loaded successfully")
+        
+        
+    def _create_prompt(self, prompt: str) -> str:
+        """Create the analysis prompt with current context and objectives."""
+        if not self.active_objectives:
+            logger.error("No active objectives set")
+            raise ValueError("No active objectives have been set")
+            
+        if not self.context:
+            logger.error("No context loaded")
+            raise ValueError("No context has been loaded")
+
+        # Format objectives for clear instruction
+        objectives_text = "\nFocus on the following objectives:\n"
+        for obj in self.active_objectives:
+            objectives_text += f"\n{obj['name']}: {obj['description']}"
+            for key in ['components', 'focus_areas', 'deliverables', 'aspects', 'considerations']:
+                if key in obj:
+                    objectives_text += f"\nKey {key} to consider:"
+                    for item in obj[key]:
+                        objectives_text += f"\n- {item}"
+
+        # Add constraints
+        constraints_text = ""
+        if 'constraints' in self.persona_config['objectives']:
+            constraints_text = "\n\nAnalysis Constraints:\n" + \
+                             "\n".join(f"- {c}" for c in self.persona_config['objectives']['constraints'])
+
+        full_prompt = f"""
+{self.persona_config['content']['role_definition']}
+
+{objectives_text}
+{constraints_text}
+
+Document Content:
+{json.dumps(self.context, indent=2)}
+
+Analysis Request:
+{prompt}
+
+Please provide a structured analysis following the objectives and constraints outlined above.
+"""
+        logger.debug(f"Created prompt with length: {len(full_prompt)}")
+        self.prompt_tracker.add_prompt(full_prompt, datetime.datetime.now().isoformat())
+        return full_prompt
+
+    def analyze_prompt(self, prompt: str) -> Dict:
+        """Analyze the context with given prompt and return structured response."""
+        try:
+            start_time = datetime.datetime.now()
+            full_prompt = self._create_prompt(prompt)
+            
+            request_body = {
+                "messages": [{"role": "user", "content": full_prompt}],
+                "max_tokens": self.model_config['model']['max_tokens'],
+                "temperature": self.model_config['model']['temperature'],
+                "top_p": self.model_config['model']['top_p'],
+                "anthropic_version": 'bedrock-2023-05-31'
+            }
+            
+            logger.info("Invoking Bedrock model")
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps(request_body)
+            )
+
+            response_body = json.loads(response['body'].read())
+            end_time = datetime.datetime.now()
+            execution_time = (end_time - start_time).total_seconds()
+            
+            # Store metrics
+            self.latest_metrics = ModelMetrics(
+                input_tokens=response_body['usage']['input_tokens'],
+                output_tokens=response_body['usage']['output_tokens'],
+                total_tokens=response_body['usage']['input_tokens'] + response_body['usage']['output_tokens'],
+                execution_time=execution_time,
+                timestamp=end_time.isoformat()
+            )
+
+            result = {
+                "content": response_body['content'][0]['text'],
+                "metadata": {
+                    "input_tokens": self.latest_metrics.input_tokens,
+                    "output_tokens": self.latest_metrics.output_tokens,
+                    "total_tokens": self.latest_metrics.total_tokens,
+                    "execution_time": self.latest_metrics.execution_time,
+                    "active_objectives": [obj['id'] for obj in self.active_objectives],
+                    "timestamp": self.latest_metrics.timestamp
+                }
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in analyze_prompt: {e}")
+            raise
+
+    def print_results(self, result: Dict):
+        """Print analysis results in a formatted way"""
+        # Print the main analysis content
+        self.console.print("\n[bold blue]Analysis Result[/bold blue]")
+        self.console.print(Panel(result['content'], title="Analysis Content", border_style="blue"))
+        
+        # Print metrics in a table
+        metrics_table = Table(title="Execution Metrics", show_header=True, header_style="bold magenta")
+        metrics_table.add_column("Metric", style="cyan")
+        metrics_table.add_column("Value", style="green")
+        
+        for key, value in result['metadata'].items():
+            metrics_table.add_row(key, str(value))
+        
+        self.console.print(metrics_table)
+
+    def get_latest_prompt(self) -> Dict:
+        """Retrieve the latest prompt used"""
+        return self.prompt_tracker.get_latest_prompt()
+
+    def get_latest_metrics(self) -> ModelMetrics:
+        """Retrieve the latest execution metrics"""
+        return self.latest_metrics
+        
+________________________________________________________________________________________________________________________________________________________________________
+
+        
 # Initialize the analyzer
 analyzer = DIAAnalyzer('configs/persona_config_v2.json', 'configs/model_config_claude_haiku_v2.json')
         
@@ -137,7 +361,7 @@ with open('data_input/input_data_ad_ai.json', 'r') as f:
     ad_content = json.load(f)
     logger.info("Successfully loaded input data")
 
-# Set objectives and load context
+# Example 1: PDM Analysis
 analyzer.set_active_objectives(['PDM_ANALYSIS'])
 analyzer.load_context(ad_content)
 
@@ -147,54 +371,110 @@ result = analyzer.analyze_prompt(
     "Include impact on existing tables and new table requirements."
     )
 
-# Print formatted results
-analyzer.print_results(result)
-
-
 # Example of accessing prompt and metrics
 print("\nLatest Prompt:")
 latest_prompt = analyzer.get_latest_prompt()
 print(latest_prompt['prompt'] if latest_prompt else "No prompt available")
 
+# Print formatted results
+analyzer.print_results(result)
 
+________________________________________________________________________________________________________________________________________________________________________
 
-
-
-# Example 1: Focus on PDM Analysis only
-analyzer.set_active_objectives(['PDM_ANALYSIS'])
-analyzer.load_context(ad_content)
-pdm_result = analyzer.analyze_prompt(
-    "Analyze the physical data model changes required for this implementation. "
-    "Include impact on existing tables and new table requirements."
-)
-
-# Example 2: Focus on Integration and Reference Data
-analyzer.set_active_objectives(['INTEGRATION', 'REF_DATA'])
-analyzer.load_context(ad_content)
-integration_result = analyzer.analyze_prompt(
-    "Analyze the API changes and reference data impacts. "
-    "Focus on new API endpoints and required reference data updates."
-)
-
-# Example 3: Comprehensive Analysis
-analyzer.set_active_objectives(['DIA_CREATION', 'PDM_ANALYSIS', 'DQ_RULES', 'REF_DATA', 'INTEGRATION'])
-analyzer.load_context(ad_content)
-full_result = analyzer.analyze_prompt(
-    "Provide a comprehensive data impact assessment for the same-day delivery implementation."
-)
-
-# Example 4: Data Quality Focus
-analyzer.set_active_objectives(['DQ_RULES'])
-analyzer.load_context(ad_content)
-dq_result = analyzer.analyze_prompt(
-    "Analyze the data quality implications of this implementation. "
-    "Focus on required validation rules and quality controls."
-)
-
-# Example 5: PDM and Integration Combined Analysis
-analyzer.set_active_objectives(['PDM_ANALYSIS', 'INTEGRATION'])
-analyzer.load_context(ad_content)
-pdm_api_result = analyzer.analyze_prompt(
-    "Analyze how the new API endpoints will interact with the proposed database changes. "
-    "Include any potential performance or consistency considerations."
-)
+Analysis Result
+╭─────────────────────────────────────────────── Analysis Content ────────────────────────────────────────────────╮
+│ As a Senior Data Architect specialized in E-commerce data environments, I have analyzed the physical data model │
+│ changes required for the implementation of the same-day delivery service. The analysis considers the key focus  │
+│ areas, including table structures, relationships, indexes, and constraints, while ensuring data consistency,    │
+│ backward compatibility, data governance standards, and data lineage preservation.                               │
+│                                                                                                                 │
+│ 1. Table Structures:                                                                                            │
+│                                                                                                                 │
+│    a. New Tables:                                                                                               │
+│       - `delivery_windows`: This table will manage the available delivery time slots, including the time slot   │
+│ code, start and end times, base capacity, available capacity, zone information, date, and status.               │
+│       - `delivery_zones`: This table will store the details of the geographic delivery zones, such as the zone  │
+│ code, name, postal code pattern, service level, and active status.                                              │
+│       - `lsp_capacity`: This table will track the real-time capacity information for each delivery zone and     │
+│ time slot, including the total and reserved capacity.                                                           │
+│                                                                                                                 │
+│    b. Existing Table Updates:                                                                                   │
+│       - `orders`: Add new columns for `delivery_window_id`, `delivery_zone_id`, `delivery_type`,                │
+│ `lsp_tracking_ref`, and `delivery_status`.                                                                      │
+│       - `customer_addresses`: Add a new column for `zone_id` and `zone_validation_date`.                        │
+│                                                                                                                 │
+│ 2. Relationships:                                                                                               │
+│                                                                                                                 │
+│    a. `delivery_windows` table:                                                                                 │
+│       - `zone_id` column is a foreign key referencing the `delivery_zones` table.                               │
+│                                                                                                                 │
+│    b. `lsp_capacity` table:                                                                                     │
+│       - `zone_id` column is a foreign key referencing the `delivery_zones` table.                               │
+│       - `window_id` column is a foreign key referencing the `delivery_windows` table.                           │
+│       - `lsp_id` column is a foreign key referencing an external LSP (Logistics Service Provider) table.        │
+│                                                                                                                 │
+│    c. `orders` table:                                                                                           │
+│       - `delivery_window_id` column is a foreign key referencing the `delivery_windows` table.                  │
+│       - `delivery_zone_id` column is a foreign key referencing the `delivery_zones` table.                      │
+│                                                                                                                 │
+│    d. `customer_addresses` table:                                                                               │
+│       - `zone_id` column is a foreign key referencing the `delivery_zones` table.                               │
+│                                                                                                                 │
+│ 3. Indexes:                                                                                                     │
+│                                                                                                                 │
+│    a. `delivery_windows` table:                                                                                 │
+│       - Index on `zone_id`, `date`, `time_slot_code`, and `status` columns for efficient delivery window        │
+│ availability checks.                                                                                            │
+│                                                                                                                 │
+│    b. `delivery_zones` table:                                                                                   │
+│       - Index on `zone_code` and `postal_code_pattern` columns for fast zone lookup and validation.             │
+│                                                                                                                 │
+│    c. `lsp_capacity` table:                                                                                     │
+│       - Index on `zone_id`, `window_id`, and `last_updated` columns for quick capacity verification and         │
+│ updates.                                                                                                        │
+│                                                                                                                 │
+│    d. `orders` table:                                                                                           │
+│       - Index on `delivery_window_id`, `delivery_zone_id`, and `delivery_type` columns for order management and │
+│ reporting.                                                                                                      │
+│                                                                                                                 │
+│ 4. Constraints:                                                                                                 │
+│                                                                                                                 │
+│    a. `delivery_windows` table:                                                                                 │
+│       - Primary Key constraint on `window_id` column.                                                           │
+│       - Unique constraint on `zone_id`, `date`, and `time_slot_code` columns to ensure unique time slot         │
+│ availability per zone and date.                                                                                 │
+│       - Check constraint on `start_time` and `end_time` columns to ensure valid time slot definitions.          │
+│       - Check constraint on `available_capacity` column to ensure it does not exceed the `base_capacity`.       │
+│                                                                                                                 │
+│    b. `delivery_zones` table:                                                                                   │
+│       - Primary Key constraint on `zone_id` column.                                                             │
+│       - Unique constraint on `zone_code` column to ensure unique zone identifiers.                              │
+│       - Check constraint on `postal_code_pattern` column to ensure valid regular expression format.             │
+│                                                                                                                 │
+│    c. `lsp_capacity` table:                                                                                     │
+│       - Primary Key constraint on `capacity_id` column.                                                         │
+│       - Foreign Key constraints on `zone_id`, `window_id`, and `lsp_id` columns referencing the respective      │
+│ tables.                                                                                                         │
+│       - Check constraint on `total_capacity` and `reserved_capacity` columns to ensure valid capacity values.   │
+│                                                                                                                 │
+│    d. `orders` table:                                                                                           │
+│       - Foreign Key constraints on `delivery_window_id` and `delivery_zone_id` columns referencing the          │
+│ respective tables.                                                                                              │
+│       - Check constraint on `delivery_type` column to ensure valid delivery types (STANDARD, EXPRESS,           │
+│ SAME_DAY).                                                                                                      │
+│                                                                                                                 │
+│ The proposed changes to the physical data model aim to maintain data consistency, ensure backward               │
+│ compatibility, follow data governance standards, and preserve data lineage. The new tables and table updates    │
+│ provide the necessary infrastructure to support the same-day delivery service, including delivery window        │
+│ management, zone-based coverage, and real-time LSP capacity tracking.                                           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                Execution Metrics                 
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Metric            ┃ Value                      ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ input_tokens      │ 1868                       │
+│ output_tokens     │ 1066                       │
+│ total_tokens      │ 2934                       │
+│ execution_time    │ 10.859942                  │
+│ active_objectives │ ['PDM_ANALYSIS']           │
+│ timestamp         │ 2025-01-15T17:05:42.492893 │
