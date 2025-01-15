@@ -1,3 +1,219 @@
+import boto3
+import json
+import logging
+import datetime
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+
+@dataclass
+class ModelMetrics:
+    """Class to store model execution metrics"""
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    execution_time: float
+    timestamp: str
+
+class PromptTracker:
+    """Class to track and store prompts"""
+    def __init__(self):
+        self.prompts = []
+        
+    def add_prompt(self, prompt: str, timestamp: str):
+        self.prompts.append({
+            "prompt": prompt,
+            "timestamp": timestamp
+        })
+    
+    def get_latest_prompt(self) -> Dict:
+        return self.prompts[-1] if self.prompts else None
+    
+    def get_all_prompts(self) -> List[Dict]:
+        return self.prompts
+
+class DIAAnalyzer:
+    def __init__(self, persona_path: str, model_config_path: str):
+        """Initialize the DIA Analyzer with persona and model configurations."""
+        logger.info("Initializing DIAAnalyzer")
+        self.bedrock = boto3.client('bedrock-runtime', region_name='us-east-1')
+        
+        # Load configurations
+        self.model_config = self._load_json_file(model_config_path)
+        self.model_id = self.model_config['model']['id']
+        
+        # Load and structure persona config
+        self.persona_config = self._load_json_file(persona_path)
+        self.active_objectives = self.persona_config['objectives']['primary']
+        
+        # Initialize tracking components
+        self.prompt_tracker = PromptTracker()
+        self.latest_metrics = None
+        self.context = None
+        
+        # Initialize Rich console for pretty printing
+        self.console = Console()
+
+    # ... (previous methods remain the same until _create_prompt) ...
+
+    def _create_prompt(self, prompt: str) -> str:
+        """Create the analysis prompt with current context and objectives."""
+        if not self.active_objectives:
+            logger.error("No active objectives set")
+            raise ValueError("No active objectives have been set")
+            
+        if not self.context:
+            logger.error("No context loaded")
+            raise ValueError("No context has been loaded")
+
+        # ... (previous prompt creation logic) ...
+
+        # Track the prompt
+        self.prompt_tracker.add_prompt(full_prompt, datetime.datetime.now().isoformat())
+        
+        return full_prompt
+
+    def analyze_prompt(self, prompt: str) -> Dict:
+        """Analyze the context with given prompt and return structured response."""
+        try:
+            start_time = datetime.datetime.now()
+            full_prompt = self._create_prompt(prompt)
+            
+            request_body = {
+                "messages": [{"role": "user", "content": full_prompt}],
+                "max_tokens": self.model_config['model']['max_tokens'],
+                "temperature": self.model_config['model']['temperature'],
+                "top_p": self.model_config['model']['top_p'],
+                "anthropic_version": 'bedrock-2023-05-31'
+            }
+            
+            logger.info("Invoking Bedrock model")
+            response = self.bedrock.invoke_model(
+                modelId=self.model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps(request_body)
+            )
+
+            response_body = json.loads(response['body'].read())
+            end_time = datetime.datetime.now()
+            execution_time = (end_time - start_time).total_seconds()
+            
+            # Store metrics
+            self.latest_metrics = ModelMetrics(
+                input_tokens=response_body['usage']['input_tokens'],
+                output_tokens=response_body['usage']['output_tokens'],
+                total_tokens=response_body['usage']['input_tokens'] + response_body['usage']['output_tokens'],
+                execution_time=execution_time,
+                timestamp=end_time.isoformat()
+            )
+
+            result = {
+                "content": response_body['content'][0]['text'],
+                "metadata": {
+                    "input_tokens": self.latest_metrics.input_tokens,
+                    "output_tokens": self.latest_metrics.output_tokens,
+                    "total_tokens": self.latest_metrics.total_tokens,
+                    "execution_time": self.latest_metrics.execution_time,
+                    "active_objectives": [obj['id'] for obj in self.active_objectives],
+                    "timestamp": self.latest_metrics.timestamp
+                }
+            }
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in analyze_prompt: {e}")
+            raise
+
+    def print_results(self, result: Dict):
+        """Print analysis results in a formatted way"""
+        # Print the main analysis content
+        self.console.print("\n[bold blue]Analysis Result[/bold blue]")
+        self.console.print(Panel(result['content'], title="Analysis Content", border_style="blue"))
+        
+        # Print metrics in a table
+        metrics_table = Table(title="Execution Metrics", show_header=True, header_style="bold magenta")
+        metrics_table.add_column("Metric", style="cyan")
+        metrics_table.add_column("Value", style="green")
+        
+        for key, value in result['metadata'].items():
+            metrics_table.add_row(key, str(value))
+        
+        self.console.print(metrics_table)
+
+    def get_latest_prompt(self) -> Dict:
+        """Retrieve the latest prompt used"""
+        return self.prompt_tracker.get_latest_prompt()
+
+    def get_latest_metrics(self) -> ModelMetrics:
+        """Retrieve the latest execution metrics"""
+        return self.latest_metrics
+
+# Example usage
+if __name__ == "__main__":
+    try:
+        # Initialize the analyzer
+        analyzer = DIAAnalyzer('configs/persona_config.json', 'configs/model_config_claude_haiku.json')
+        
+        # Load the input data
+        with open('data_input/input_data_ad_ai.json', 'r') as f:
+            ad_content = json.load(f)
+            logger.info("Successfully loaded input data")
+
+        # Set objectives and load context
+        analyzer.set_active_objectives(['PDM_ANALYSIS'])
+        analyzer.load_context(ad_content)
+
+        # Run analysis
+        result = analyzer.analyze_prompt(
+            "Analyze the physical data model changes required for this implementation. "
+            "Include impact on existing tables and new table requirements."
+        )
+
+        # Print formatted results
+        analyzer.print_results(result)
+        
+        # Example of accessing prompt and metrics
+        print("\nLatest Prompt:")
+        latest_prompt = analyzer.get_latest_prompt()
+        print(latest_prompt['prompt'] if latest_prompt else "No prompt available")
+        
+        print("\nLatest Metrics:")
+        latest_metrics = analyzer.get_latest_metrics()
+        print(f"Total tokens: {latest_metrics.total_tokens}")
+        print(f"Execution time: {latest_metrics.execution_time:.2f} seconds")
+
+    except Exception as e:
+        logger.error(f"Error in main execution: {e}")
+        raise
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 model_config_claude_haiku.json:
 {
   "model": {
