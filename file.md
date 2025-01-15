@@ -130,6 +130,40 @@ data_artifacts.json:
 ________________________________________________________________________________________________________________________________________________________________________
 
 
+# Initialize the analyzer
+analyzer = DIAAnalyzer('configs/persona_config_v2.json', 'configs/model_config_claude_haiku_v2.json')
+        
+# Load the input data
+with open('data_input/input_data_ad_ai.json', 'r') as f:
+    ad_content = json.load(f)
+    logger.info("Successfully loaded input data")
+
+# Set objectives and load context
+analyzer.set_active_objectives(['PDM_ANALYSIS'])
+analyzer.load_context(ad_content)
+
+# Run analysis
+result = analyzer.analyze_prompt(
+    "Analyze the physical data model changes required for this implementation. "
+    "Include impact on existing tables and new table requirements."
+    )
+
+# Print formatted results
+analyzer.print_results(result)
+
+# Example of accessing prompt and metrics
+print("\nLatest Prompt:")
+latest_prompt = analyzer.get_latest_prompt()
+print(latest_prompt['prompt'] if latest_prompt else "No prompt available")
+
+
+
+
+
+
+
+
+
 # Example 1: Focus on PDM Analysis only
 analyzer.set_active_objectives(['PDM_ANALYSIS'])
 analyzer.load_context(ad_content)
